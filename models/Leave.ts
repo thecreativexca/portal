@@ -1,7 +1,18 @@
 import mongoose, { Schema, Document, Model } from "mongoose";
 
+export const LEAVE_TYPES = [
+  "annual",
+  "sick",
+  "casual",
+  "unpaid",
+  "other",
+] as const;
+export type LeaveType = (typeof LEAVE_TYPES)[number];
+
 export interface ILeave extends Document {
+  companyId: mongoose.Types.ObjectId;
   userId: mongoose.Types.ObjectId;
+  leaveType: LeaveType;
   startDate: Date;
   endDate: Date;
   reason: string;
@@ -11,10 +22,24 @@ export interface ILeave extends Document {
 
 const LeaveSchema = new Schema<ILeave>(
   {
+    companyId: {
+      type: Schema.Types.ObjectId,
+      ref: "Company",
+      required: [true, "Company ID is required"],
+      index: true,
+    },
     userId: {
       type: Schema.Types.ObjectId,
       ref: "User",
       required: [true, "User ID is required"],
+    },
+    leaveType: {
+      type: String,
+      enum: {
+        values: LEAVE_TYPES,
+        message: "Leave type must be one of: " + LEAVE_TYPES.join(", "),
+      },
+      default: "annual",
     },
     startDate: {
       type: Date,

@@ -1,20 +1,15 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
 import dbConnect from "@/lib/db";
 import Task from "@/models/Task";
 import Leave from "@/models/Leave";
+import { requireAuth, handleApiError } from "@/lib/guards";
 
 export async function GET(request: Request) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
+    const { user, companyId } = await requireAuth();
     await dbConnect();
 
-    const userId = (session.user as any).id;
+    const userId = user._id;
     const url = new URL(request.url);
     const monthStr = url.searchParams.get("month");
 
@@ -27,18 +22,28 @@ export async function GET(request: Request) {
     } else {
       const now = new Date();
       startDate = new Date(now.getFullYear(), now.getMonth(), 1);
-      endDate = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+      endDate = new Date(
+        now.getFullYear(),
+        now.getMonth() + 1,
+        0,
+        23,
+        59,
+        59,
+        999
+      );
     }
 
     const [tasks, leaves] = await Promise.all([
       Task.find({
+        companyId,
         assignedTo: userId,
         dueDate: { $gte: startDate, $lte: endDate },
       })
-        .populate("projectId", "title")
+        .populate("projectId", "projectName")
         .select("title dueDate status projectId priority")
         .lean(),
       Leave.find({
+        companyId,
         userId,
         startDate: { $lte: endDate },
         endDate: { $gte: startDate },
@@ -47,28 +52,53 @@ export async function GET(request: Request) {
         .lean(),
     ]);
 
-    // Generate all dates in range
-    const events: {
-      date: string;
-      tasks: { title: string; project: string; status: string; priority: string }[];
-      leaves: { reason: string; status: string; type: "start" | "end" | "middle" }[];
-    }[] = [];
+    // Build a map of date -> { tasks, leaves } for the month range.
+    interface CalendarEventTask {
+      title: string;
+      project: string;
+      status: string;
+      priority: string;
+    }
+    interface CalendarEventLeave {
+      reason: string;
+      status: string;
+      type: "start" | "end" | "middle";
+    }
+    const eventMap = new Map<
+      string,
+      { tasks: CalendarEventTask[]; leaves: CalendarEventLeave[] }
+    >();
 
-    const eventMap = new Map<string, { tasks: any[]; leaves: any[] }>();
+    // Populate changes projectId from an ObjectId to { title }, so the lean
+    // documents are cast to the shape the calendar actually reads.
+    const taskRows = tasks as unknown as Array<{
+      title: string;
+      dueDate: Date;
+      status: string;
+      priority: string;
+      projectId?: { projectName: string } | null;
+    }>;
 
-    tasks.forEach((t: any) => {
+    taskRows.forEach((t) => {
       if (!t.dueDate) return;
       const key = new Date(t.dueDate).toISOString().split("T")[0];
       if (!eventMap.has(key)) eventMap.set(key, { tasks: [], leaves: [] });
       eventMap.get(key)!.tasks.push({
         title: t.title,
-        project: t.projectId?.title || "—",
+        project: t.projectId?.projectName || "—",
         status: t.status,
         priority: t.priority,
       });
     });
 
-    leaves.forEach((l: any) => {
+    const leaveRows = leaves as unknown as Array<{
+      reason: string;
+      status: string;
+      startDate: Date;
+      endDate: Date;
+    }>;
+
+    leaveRows.forEach((l) => {
       const start = new Date(l.startDate);
       const end = new Date(l.endDate);
       const current = new Date(start);
@@ -81,19 +111,24 @@ export async function GET(request: Request) {
             : key === end.toISOString().split("T")[0]
             ? "end"
             : "middle";
-        eventMap.get(key)!.leaves.push({ reason: l.reason, status: l.status, type });
+        eventMap.get(key)!.leaves.push({
+          reason: l.reason,
+          status: l.status,
+          type,
+        });
         current.setDate(current.getDate() + 1);
       }
     });
 
     // Convert to sorted array
-    const sorted = Array.from(eventMap.entries()).sort(([a], [b]) => a.localeCompare(b));
+    const sorted = Array.from(eventMap.entries()).sort(([a], [b]) =>
+      a.localeCompare(b)
+    );
 
     return NextResponse.json({
       events: sorted.map(([date, data]) => ({ date, ...data })),
     });
   } catch (error) {
-    console.error("Error fetching calendar:", error);
-    return NextResponse.json({ error: "Failed" }, { status: 500 });
+    return handleApiError(error);
   }
 }

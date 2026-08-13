@@ -1,6 +1,7 @@
 import mongoose, { Schema, Document, Model } from "mongoose";
 
 export interface ISettings extends Document {
+  companyId: mongoose.Types.ObjectId;
   companyName: string;
   workingHours: {
     start: string;
@@ -16,6 +17,12 @@ export interface ISettings extends Document {
 
 const SettingsSchema = new Schema<ISettings>(
   {
+    companyId: {
+      type: Schema.Types.ObjectId,
+      ref: "Company",
+      required: [true, "Company ID is required"],
+      index: true,
+    },
     companyName: {
       type: String,
       default: "My Company",

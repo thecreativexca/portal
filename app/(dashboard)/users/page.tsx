@@ -1,71 +1,231 @@
-"use client";
+﻿"use client";
 
-import { useState, useEffect, Fragment } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useSession } from "next-auth/react";
 import { redirect } from "next/navigation";
+import { PageShell, PageHeader, LoadingCenter, FilterBar } from "@/components/portal";
+
+interface Department {
+  _id: string;
+  name: string;
+}
 
 interface User {
   _id: string;
+  fullName: string;
   name: string;
   email: string;
+  phone?: string;
   role: string;
+  departmentId?: Department | null;
+  designation?: string;
+  employeeId?: string;
+  joiningDate?: string;
+  salary?: number;
+  status: "active" | "inactive";
+  profileImage?: string;
   createdAt: string;
 }
 
 interface UserForm {
-  name: string;
+  fullName: string;
   email: string;
+  phone: string;
   password: string;
   role: string;
+  departmentId: string;
+  designation: string;
+  employeeId: string;
+  joiningDate: string;
+  salary: string;
+  status: "active" | "inactive";
+  profileImage: string;
 }
 
-const emptyForm: UserForm = { name: "", email: "", password: "", role: "employee" };
+const ROLE_OPTIONS: { key: string; label: string }[] = [
+  { key: "hr", label: "HR" },
+  { key: "project_manager", label: "Project Manager" },
+  { key: "team_lead", label: "Team Lead" },
+  { key: "employee", label: "Employee" },
+  { key: "accounts", label: "Accounts" },
+];
+
+const ROLE_GRADIENTS: Record<string, string> = {
+  ceo: "linear-gradient(135deg,#8b5cf6,#a78bfa)",
+  hr: "linear-gradient(135deg,#f43f5e,#fb7185)",
+  project_manager: "linear-gradient(135deg,#1d6af5,#0ea5e9)",
+  team_lead: "linear-gradient(135deg,#06b6d4,#38bdf8)",
+  employee: "linear-gradient(135deg,#64748b,#94a3b8)",
+  accounts: "linear-gradient(135deg,#10b981,#34d399)",
+};
+
+const emptyForm: UserForm = {
+  fullName: "",
+  email: "",
+  phone: "",
+  password: "",
+  role: "employee",
+  departmentId: "",
+  designation: "",
+  employeeId: "",
+  joiningDate: "",
+  salary: "",
+  status: "active",
+  profileImage: "",
+};
+
+function initials(name: string) {
+  return name
+    .split(" ")
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((p) => p[0]?.toUpperCase() || "")
+    .join("") || "?";
+}
+
+const AVATAR_TILE_MAP: Record<string, string> = {
+  ceo: "tile-purple",
+  hr: "tile-rose",
+  project_manager: "tile-blue",
+  team_lead: "tile-cyan",
+  employee: "tile-green",
+  accounts: "tile-amber",
+};
+
+function useDebouncedValue(value: string, delay = 300) {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(value), delay);
+    return () => clearTimeout(t);
+  }, [value, delay]);
+  return debounced;
+}
+
+function UserAvatar({
+  user,
+  size = 38,
+  rounded = "50%",
+}: {
+  user: User;
+  size?: number;
+  rounded?: string;
+}) {
+  const name = user.fullName || user.name;
+  const grad = ROLE_GRADIENTS[user.role] || ROLE_GRADIENTS.employee;
+
+  if (user.profileImage) {
+    return (
+      <img
+        src={user.profileImage}
+        alt=""
+        style={{ width: size, height: size, borderRadius: rounded, objectFit: "cover", flexShrink: 0 }}
+        onError={(e) => {
+          (e.currentTarget as HTMLImageElement).style.display = "none";
+        }}
+      />
+    );
+  }
+
+  if (rounded === "12px") {
+    return (
+      <div className="emp-avatar" style={{ width: size, height: size, background: grad, fontSize: size * 0.34 }}>
+        {initials(name)}
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className={`tile tile-sm ${AVATAR_TILE_MAP[user.role] || "tile-blue"}`}
+      style={{ width: size, height: size, borderRadius: rounded, fontSize: size * 0.34 }}
+    >
+      {initials(name)}
+    </div>
+  );
+}
 
 export default function UsersPage() {
   const { data: session, status } = useSession();
-  const role = (session?.user as any)?.role;
+  const role = (session?.user as { role?: string })?.role;
 
   const [users, setUsers] = useState<User[]>([]);
+  const [departments, setDepartments] = useState<Department[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
+  const debouncedSearch = useDebouncedValue(search);
   const [roleFilter, setRoleFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [departmentFilter, setDepartmentFilter] = useState("");
+  const [page, setPage] = useState(1);
+  const [viewMode, setViewMode] = useState<"table" | "grid">("table");
+  const [pagination, setPagination] = useState({
+    page: 1,
+    pageSize: 15,
+    total: 0,
+    totalPages: 1,
+  });
 
-  // Modal state
   const [modalOpen, setModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<UserForm>(emptyForm);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-
-  // Delete confirmation
   const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  const previousSearch = useRef("");
+  useEffect(() => {
+    if (previousSearch.current !== debouncedSearch) {
+      previousSearch.current = debouncedSearch;
+      setPage(1);
+    }
+  }, [debouncedSearch]);
 
   useEffect(() => {
     if (status === "unauthenticated") redirect("/login");
-    if (status === "authenticated" && role !== "ceo") redirect("/");
+    if (status === "authenticated" && role !== "ceo" && role !== "hr")
+      redirect("/");
   }, [status, role]);
 
-  const fetchUsers = async () => {
+  const fetchUsers = useCallback(async () => {
     try {
       setLoading(true);
       const params = new URLSearchParams();
-      if (search) params.set("search", search);
+      params.set("page", String(page));
+      params.set("pageSize", String(pagination.pageSize));
+      if (debouncedSearch) params.set("search", debouncedSearch);
       if (roleFilter) params.set("role", roleFilter);
+      if (statusFilter) params.set("status", statusFilter);
+      if (departmentFilter) params.set("departmentId", departmentFilter);
 
       const res = await fetch(`/api/users?${params}`);
       if (!res.ok) throw new Error("Failed to fetch");
       const data = await res.json();
-      setUsers(data.users);
+      setUsers(data.users || []);
+      if (data.pagination) setPagination(data.pagination);
     } catch (err) {
       console.error("Error fetching users:", err);
     } finally {
       setLoading(false);
     }
-  };
+  }, [page, pagination.pageSize, debouncedSearch, roleFilter, statusFilter, departmentFilter]);
+
+  const fetchDepartments = useCallback(async () => {
+    try {
+      const res = await fetch("/api/departments");
+      if (!res.ok) return;
+      const data = await res.json();
+      setDepartments(data.departments || []);
+    } catch (err) {
+      console.error("Error fetching departments:", err);
+    }
+  }, []);
 
   useEffect(() => {
-    if (role === "ceo") fetchUsers();
-  }, [role, search, roleFilter]);
+    if (role === "ceo" || role === "hr") {
+      fetchUsers();
+      fetchDepartments();
+    }
+  }, [role, fetchUsers, fetchDepartments]);
 
   const openCreateModal = () => {
     setEditingId(null);
@@ -76,7 +236,20 @@ export default function UsersPage() {
 
   const openEditModal = (user: User) => {
     setEditingId(user._id);
-    setForm({ name: user.name, email: user.email, password: "", role: user.role });
+    setForm({
+      fullName: user.fullName || user.name || "",
+      email: user.email,
+      phone: user.phone || "",
+      password: "",
+      role: user.role,
+      departmentId: user.departmentId?._id || "",
+      designation: user.designation || "",
+      employeeId: user.employeeId || "",
+      joiningDate: user.joiningDate ? user.joiningDate.slice(0, 10) : "",
+      salary: user.salary !== undefined && user.salary !== null ? String(user.salary) : "",
+      status: user.status || "active",
+      profileImage: user.profileImage || "",
+    });
     setError("");
     setModalOpen(true);
   };
@@ -85,42 +258,43 @@ export default function UsersPage() {
     setSaving(true);
     setError("");
 
+    const body: Record<string, unknown> = {
+      fullName: form.fullName,
+      email: form.email,
+      role: form.role,
+      departmentId: form.departmentId || undefined,
+      designation: form.designation,
+      employeeId: form.employeeId,
+      joiningDate: form.joiningDate || undefined,
+      salary: form.salary === "" ? undefined : Number(form.salary),
+      status: form.status,
+      phone: form.phone || undefined,
+      profileImage: form.profileImage || undefined,
+    };
+    if (form.password) body.password = form.password;
+
     try {
-      if (editingId) {
-        const body: Record<string, string> = {
-          name: form.name,
-          email: form.email,
-          role: form.role,
-        };
-        if (form.password) body.password = form.password;
+      const res = editingId
+        ? await fetch(`/api/users/${editingId}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          })
+        : await fetch("/api/users", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
 
-        const res = await fetch(`/api/users/${editingId}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        });
-
-        if (!res.ok) {
-          const data = await res.json();
-          throw new Error(data.error || "Failed to update user");
-        }
-      } else {
-        const res = await fetch("/api/users", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(form),
-        });
-
-        if (!res.ok) {
-          const data = await res.json();
-          throw new Error(data.error || "Failed to create user");
-        }
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || "Failed to save user");
       }
 
       setModalOpen(false);
       fetchUsers();
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to save user");
     } finally {
       setSaving(false);
     }
@@ -141,216 +315,555 @@ export default function UsersPage() {
     }
   };
 
-  if (status === "loading") {
-    return (
-      <div className="flex items-center justify-center min-h-[60vh]">
-        <div className="animate-spin h-8 w-8 rounded-full border-4 border-indigo-600 dark:border-indigo-400 border-t-transparent" />
-      </div>
-    );
-  }
+  const hasFilters =
+    search !== "" || roleFilter !== "" || statusFilter !== "" || departmentFilter !== "";
 
-  return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-zinc-900 dark:text-zinc-50">
-            User Management
-          </h1>
-          <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-            Manage all employees, managers, and admins
-          </p>
-        </div>
-        <button
-          onClick={openCreateModal}
-          className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 dark:bg-indigo-500 dark:hover:bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition"
-        >
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+  const clearFilters = () => {
+    setSearch("");
+    setRoleFilter("");
+    setStatusFilter("");
+    setDepartmentFilter("");
+    setPage(1);
+  };
+
+  const activeCount = users.filter((u) => u.status === "active").length;
+  const inactiveCount = users.filter((u) => u.status === "inactive").length;
+
+  const from = pagination.total > 0 ? (pagination.page - 1) * pagination.pageSize + 1 : 0;
+  const to = Math.min(pagination.page * pagination.pageSize, pagination.total);
+
+  if (status === "loading") return <LoadingCenter />;
+
+  const renderActions = (user: User) => (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 4 }}>
+      <button onClick={() => openEditModal(user)} className="icon-btn primary" title="Edit employee">
+        <svg width="15" height="15" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" />
+        </svg>
+      </button>
+      {user.role !== "ceo" && (
+        <button onClick={() => setDeletingId(user._id)} className="icon-btn danger" title="Delete employee">
+          <svg width="15" height="15" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
+          </svg>
+        </button>
+      )}
+    </div>
+  );
+
+  const emptyState = (
+    <div className="empty-state">
+      <div className="icon">
+        <svg width="24" height="24" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z" />
+        </svg>
+      </div>
+      <p style={{ fontWeight: 600, color: "var(--fg)" }}>
+        {hasFilters ? "No matching employees" : "No employees yet"}
+      </p>
+      <p>{hasFilters ? "Try adjusting your filters." : "Add your first team member to get started."}</p>
+      {!hasFilters && (
+        <button onClick={openCreateModal} className="btn btn-primary" style={{ marginTop: 16 }}>
+          <svg width="15" height="15" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
           </svg>
-          Add User
+          Add Employee
         </button>
+      )}
+      {hasFilters && (
+        <button onClick={clearFilters} className="btn btn-ghost" style={{ marginTop: 16 }}>
+          Clear filters
+        </button>
+      )}
+    </div>
+  );
+
+  return (
+    <PageShell>
+      <PageHeader
+        title="Employee Management"
+        description="Manage all employees, departments, and roles"
+        badge={
+          <span className="count-chip">
+            <svg width="12" height="12" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z" />
+            </svg>
+            {pagination.total} employees
+          </span>
+        }
+        actions={
+          <button onClick={openCreateModal} className="btn btn-primary">
+            <svg width="16" height="16" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+            </svg>
+            Add Employee
+          </button>
+        }
+      />
+
+      {/* Summary strip */}
+      <div className="summary-strip">
+        <div className="summary-item">
+          <div className="tile tile-sm tile-blue">
+            <svg width="15" height="15" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z" />
+            </svg>
+          </div>
+          <div>
+            <div className="summary-num">{loading ? "â€”" : pagination.total}</div>
+            <div className="summary-label">Total Employees</div>
+          </div>
+        </div>
+        <div className="summary-item">
+          <div className="tile tile-sm tile-green">
+            <svg width="15" height="15" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          </div>
+          <div>
+            <div className="summary-num">{loading ? "â€”" : activeCount}</div>
+            <div className="summary-label">Active (page)</div>
+          </div>
+        </div>
+        <div className="summary-item">
+          <div className="tile tile-sm tile-rose">
+            <svg width="15" height="15" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+            </svg>
+          </div>
+          <div>
+            <div className="summary-num">{loading ? "â€”" : inactiveCount}</div>
+            <div className="summary-label">Inactive (page)</div>
+          </div>
+        </div>
+        <div className="summary-item">
+          <div className="tile tile-sm tile-purple">
+            <svg width="15" height="15" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 21h16.5M4.5 3h15M5.25 3v18m13.5-18v18M9 6.75h1.5m-1.5 3h1.5m-1.5 3h1.5m3-6H15m-1.5 3H15m-1.5 3H15M9 21v-3.375c0-.621.504-1.125 1.125-1.125h3.75c.621 0 1.125.504 1.125 1.125V21" />
+            </svg>
+          </div>
+          <div>
+            <div className="summary-num">{departments.length}</div>
+            <div className="summary-label">Departments</div>
+          </div>
+        </div>
       </div>
 
-      {/* Filters */}
-      <div className="flex flex-col sm:flex-row gap-3">
-        <div className="relative flex-1">
-          <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <FilterBar>
+        <div className="search-wrap" style={{ flex: "1 1 240px", minWidth: 0 }}>
+          <svg className="search-icon" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
           </svg>
           <input
             type="text"
-            placeholder="Search by name or email..."
+            placeholder="Search name, email, ID, designation..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 pl-10 pr-4 py-2.5 text-sm text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:focus:ring-indigo-400"
+            className="input"
           />
         </div>
         <select
           value={roleFilter}
-          onChange={(e) => setRoleFilter(e.target.value)}
-          className="rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-4 py-2.5 text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          onChange={(e) => { setRoleFilter(e.target.value); setPage(1); }}
+          className="input"
+          style={{ flex: "0 0 auto", width: "auto", minWidth: 130 }}
         >
           <option value="">All Roles</option>
           <option value="ceo">CEO</option>
-          <option value="manager">Manager</option>
-          <option value="employee">Employee</option>
+          {ROLE_OPTIONS.map((r) => (
+            <option key={r.key} value={r.key}>{r.label}</option>
+          ))}
         </select>
+        <select
+          value={departmentFilter}
+          onChange={(e) => { setDepartmentFilter(e.target.value); setPage(1); }}
+          className="input"
+          style={{ flex: "0 0 auto", width: "auto", minWidth: 140 }}
+        >
+          <option value="">All Departments</option>
+          {departments.map((d) => (
+            <option key={d._id} value={d._id}>{d.name}</option>
+          ))}
+        </select>
+        {hasFilters && (
+          <button onClick={clearFilters} className="btn btn-ghost" style={{ padding: "8px 14px" }}>
+            <svg width="13" height="13" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+            Clear
+          </button>
+        )}
+        <div className="view-toggle desktop-user-table" style={{ flexShrink: 0 }}>
+          <button
+            className={viewMode === "table" ? "active" : ""}
+            onClick={() => setViewMode("table")}
+            title="Table view"
+          >
+            <svg width="15" height="15" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 12h16.5m-16.5 3.75h16.5M3.75 19.5h16.5M5.625 4.5h12.75a1.875 1.875 0 010 3.75H5.625a1.875 1.875 0 010-3.75z" />
+            </svg>
+          </button>
+          <button
+            className={viewMode === "grid" ? "active" : ""}
+            onClick={() => setViewMode("grid")}
+            title="Grid view"
+          >
+            <svg width="15" height="15" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z" />
+            </svg>
+          </button>
+        </div>
+      </FilterBar>
+
+      {/* Status quick filters */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        {(["", "active", "inactive"] as const).map((s) => (
+          <button
+            key={s || "all"}
+            onClick={() => { setStatusFilter(s); setPage(1); }}
+            className={`filter-chip${statusFilter === s ? " active" : ""}`}
+          >
+            {s === "" ? "All Status" : s === "active" ? "Active" : "Inactive"}
+          </button>
+        ))}
       </div>
 
-      {/* Users Table */}
-      <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 shadow-sm overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/50">
-                <th className="text-left px-5 py-3.5 font-semibold text-zinc-700 dark:text-zinc-300">Name</th>
-                <th className="text-left px-5 py-3.5 font-semibold text-zinc-700 dark:text-zinc-300">Email</th>
-                <th className="text-left px-5 py-3.5 font-semibold text-zinc-700 dark:text-zinc-300">Role</th>
-                <th className="text-left px-5 py-3.5 font-semibold text-zinc-700 dark:text-zinc-300">Joined</th>
-                <th className="text-right px-5 py-3.5 font-semibold text-zinc-700 dark:text-zinc-300">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
-              {loading ? (
+      {/* Desktop Table View */}
+      {viewMode === "table" && (
+        <div className="card desktop-user-table">
+          <div className="table-wrap">
+            <table className="table">
+              <thead>
                 <tr>
-                  <td colSpan={5} className="px-5 py-12 text-center text-zinc-400">
-                    Loading users...
-                  </td>
+                  <th>Employee</th>
+                  <th>Role</th>
+                  <th>Department</th>
+                  <th>Designation</th>
+                  <th>Status</th>
+                  <th>Joined</th>
+                  <th style={{ textAlign: "right" }}>Actions</th>
                 </tr>
-              ) : users.length === 0 ? (
-                <tr>
-                  <td colSpan={5} className="px-5 py-12 text-center text-zinc-400">
-                    No users found
-                  </td>
-                </tr>
-              ) : (
-                users.map((user) => (
-                  <tr key={user._id} className="hover:bg-zinc-50 dark:hover:bg-zinc-800/50 transition">
-                    <td className="px-5 py-4">
-                      <div className="flex items-center gap-3">
-                        <div className="flex h-9 w-9 items-center justify-center rounded-full bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 text-sm font-semibold">
-                          {user.name.charAt(0).toUpperCase()}
+              </thead>
+              <tbody>
+                {loading ? (
+                  [...Array(5)].map((_, i) => (
+                    <tr key={i}>
+                      <td>
+                        <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
+                          <div className="skeleton" style={{ width: 38, height: 38, borderRadius: "50%", flexShrink: 0 }} />
+                          <div style={{ flex: 1 }}>
+                            <div className="skeleton" style={{ height: 12, width: 120, marginBottom: 6 }} />
+                            <div className="skeleton" style={{ height: 10, width: 160 }} />
+                          </div>
                         </div>
-                        <span className="font-medium text-zinc-900 dark:text-zinc-100">
-                          {user.name}
-                        </span>
-                      </div>
-                    </td>
-                    <td className="px-5 py-4 text-zinc-500 dark:text-zinc-400">
-                      {user.email}
-                    </td>
-                    <td className="px-5 py-4">
-                      <RoleBadge role={user.role} />
-                    </td>
-                    <td className="px-5 py-4 text-zinc-500 dark:text-zinc-400 text-sm">
-                      {new Date(user.createdAt).toLocaleDateString()}
-                    </td>
-                    <td className="px-5 py-4 text-right">
-                      <div className="flex items-center justify-end gap-2">
-                        <button
-                          onClick={() => openEditModal(user)}
-                          className="p-2 rounded-lg text-zinc-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition"
-                          title="Edit user"
-                        >
-                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" />
-                          </svg>
-                        </button>
-                        {user.role !== "ceo" && (
-                          <button
-                            onClick={() => setDeletingId(user._id)}
-                            className="p-2 rounded-lg text-zinc-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition"
-                            title="Delete user"
-                          >
-                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
-                            </svg>
-                          </button>
-                        )}
-                      </div>
+                      </td>
+                      <td><div className="skeleton" style={{ height: 22, width: 80, borderRadius: 99 }} /></td>
+                      <td><div className="skeleton" style={{ height: 12, width: 90 }} /></td>
+                      <td><div className="skeleton" style={{ height: 12, width: 110 }} /></td>
+                      <td><div className="skeleton" style={{ height: 22, width: 60, borderRadius: 99 }} /></td>
+                      <td><div className="skeleton" style={{ height: 12, width: 80 }} /></td>
+                      <td />
+                    </tr>
+                  ))
+                ) : users.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} style={{ padding: 0, border: "none" }}>
+                      {emptyState}
                     </td>
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+                ) : (
+                  users.map((user) => (
+                    <tr key={user._id}>
+                      <td>
+                        <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
+                          <UserAvatar user={user} />
+                          <div style={{ minWidth: 0 }}>
+                            <p style={{ fontWeight: 600, color: "var(--fg)", fontSize: 13, margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              {user.fullName || user.name}
+                            </p>
+                            <p style={{ fontSize: 11.5, color: "var(--fg-subtle)", margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              {user.email}
+                            </p>
+                            {user.employeeId && (
+                              <p style={{ fontSize: 10.5, color: "var(--fg-subtle)", margin: "2px 0 0", fontWeight: 600, letterSpacing: "0.03em" }}>
+                                {user.employeeId}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      </td>
+                      <td><RoleBadge role={user.role} /></td>
+                      <td style={{ fontSize: 13 }}>{user.departmentId?.name || "â€”"}</td>
+                      <td style={{ fontSize: 13 }}>{user.designation || "â€”"}</td>
+                      <td>
+                        <span className={user.status === "active" ? "badge badge-green" : "badge badge-rose"}>
+                          {user.status === "active" ? "Active" : "Inactive"}
+                        </span>
+                      </td>
+                      <td style={{ fontSize: 12.5, color: "var(--fg-muted)" }}>
+                        {user.joiningDate
+                          ? new Date(user.joiningDate).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })
+                          : new Date(user.createdAt).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}
+                      </td>
+                      <td style={{ textAlign: "right" }}>{renderActions(user)}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
+      )}
+
+      {/* Desktop Grid View */}
+      {viewMode === "grid" && (
+        <div className="desktop-user-table">
+          {loading ? (
+            <div className="emp-grid">
+              {[...Array(6)].map((_, i) => (
+                <div key={i} className="card" style={{ padding: 18 }}>
+                  <div style={{ display: "flex", gap: 12, marginBottom: 14 }}>
+                    <div className="skeleton" style={{ width: 40, height: 40, borderRadius: 12 }} />
+                    <div style={{ flex: 1 }}>
+                      <div className="skeleton" style={{ height: 13, width: 120, marginBottom: 6 }} />
+                      <div className="skeleton" style={{ height: 11, width: 150 }} />
+                    </div>
+                  </div>
+                  <div className="skeleton" style={{ height: 11, width: 100 }} />
+                </div>
+              ))}
+            </div>
+          ) : users.length === 0 ? (
+            <div className="card">{emptyState}</div>
+          ) : (
+            <div className="emp-grid">
+              {users.map((user) => {
+                const grad = ROLE_GRADIENTS[user.role] || ROLE_GRADIENTS.employee;
+                return (
+                  <div
+                    key={user._id}
+                    className="card card-hover emp-card"
+                    style={{ "--emp-grad": grad } as React.CSSProperties}
+                  >
+                    <div style={{ padding: "16px 18px" }}>
+                      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
+                          <UserAvatar user={user} size={40} rounded="12px" />
+                          <div style={{ minWidth: 0 }}>
+                            <p style={{ fontWeight: 700, fontSize: 13.5, color: "var(--fg)", margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              {user.fullName || user.name}
+                            </p>
+                            <p style={{ fontSize: 11.5, color: "var(--fg-subtle)", margin: "2px 0 0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              {user.email}
+                            </p>
+                          </div>
+                        </div>
+                        <span className={user.status === "active" ? "badge badge-green" : "badge badge-rose"} style={{ fontSize: 10, flexShrink: 0 }}>
+                          {user.status === "active" ? "Active" : "Inactive"}
+                        </span>
+                      </div>
+                      <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                        <RoleBadge role={user.role} />
+                        {user.departmentId?.name && (
+                          <span className="badge badge-gray" style={{ fontSize: 10.5 }}>{user.departmentId.name}</span>
+                        )}
+                      </div>
+                      <div style={{ marginTop: 10, fontSize: 12, color: "var(--fg-muted)" }}>
+                        {user.designation || "No designation"}
+                        {user.employeeId && (
+                          <span style={{ marginLeft: 8, color: "var(--fg-subtle)", fontWeight: 600 }}>Â· {user.employeeId}</span>
+                        )}
+                      </div>
+                      <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                        <span style={{ fontSize: 11.5, color: "var(--fg-subtle)" }}>
+                          Joined {user.joiningDate
+                            ? new Date(user.joiningDate).toLocaleDateString("en-IN", { month: "short", year: "numeric" })
+                            : new Date(user.createdAt).toLocaleDateString("en-IN", { month: "short", year: "numeric" })}
+                        </span>
+                        {renderActions(user)}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Mobile Cards */}
+      <div className="mobile-user-list space-y-3">
+        {loading ? (
+          [...Array(4)].map((_, i) => (
+            <div key={i} className="user-card">
+              <div className="skeleton" style={{ width: 42, height: 42, borderRadius: 12, flexShrink: 0 }} />
+              <div style={{ flex: 1 }}>
+                <div className="skeleton" style={{ height: 13, width: 130, marginBottom: 6 }} />
+                <div className="skeleton" style={{ height: 11, width: 170 }} />
+              </div>
+            </div>
+          ))
+        ) : users.length === 0 ? (
+          <div className="card">{emptyState}</div>
+        ) : (
+          users.map((user) => {
+            const grad = ROLE_GRADIENTS[user.role] || ROLE_GRADIENTS.employee;
+            return (
+              <div
+                key={user._id}
+                className="user-card emp-card"
+                style={{ "--emp-grad": grad } as React.CSSProperties}
+              >
+                <UserAvatar user={user} size={42} rounded="12px" />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <p style={{ fontWeight: 700, color: "var(--fg)", fontSize: 13.5, margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {user.fullName || user.name}
+                    </p>
+                    <RoleBadge role={user.role} />
+                  </div>
+                  <p style={{ fontSize: 11.5, color: "var(--fg-subtle)", margin: "2px 0 0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {user.email}
+                  </p>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
+                    <span className="badge badge-gray">
+                      {user.departmentId?.name || "No dept"}
+                    </span>
+                    <span className={user.status === "active" ? "badge badge-green" : "badge badge-rose"}>
+                      {user.status === "active" ? "Active" : "Inactive"}
+                    </span>
+                    {user.designation && (
+                      <span style={{ fontSize: 11, color: "var(--fg-subtle)" }}>{user.designation}</span>
+                    )}
+                  </div>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 4, flexShrink: 0 }}>
+                  <button onClick={() => openEditModal(user)} className="icon-btn primary" title="Edit employee">
+                    <svg width="15" height="15" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" />
+                    </svg>
+                  </button>
+                  {user.role !== "ceo" && (
+                    <button onClick={() => setDeletingId(user._id)} className="icon-btn danger" title="Delete employee">
+                      <svg width="15" height="15" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })
+        )}
       </div>
+
+      {/* Pagination */}
+      {!loading && pagination.total > 0 && (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+          <p style={{ fontSize: 13, color: "var(--fg-muted)", margin: 0 }}>
+            Showing{" "}
+            <span style={{ fontWeight: 700, color: "var(--fg)" }}>{from}â€“{to}</span>{" "}
+            of <span style={{ fontWeight: 700, color: "var(--fg)" }}>{pagination.total}</span> employees
+          </p>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={pagination.page <= 1}
+              className="btn btn-ghost"
+              style={{ padding: "8px 16px" }}
+            >
+              <svg width="13" height="13" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                <polyline points="15 18 9 12 15 6" />
+              </svg>
+              Previous
+            </button>
+            <span style={{ fontSize: 13, color: "var(--fg-muted)" }}>
+              Page {pagination.page} of {pagination.totalPages}
+            </span>
+            <button
+              onClick={() => setPage((p) => Math.min(pagination.totalPages, p + 1))}
+              disabled={pagination.page >= pagination.totalPages}
+              className="btn btn-ghost"
+              style={{ padding: "8px 16px" }}
+            >
+              Next
+              <svg width="13" height="13" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                <polyline points="9 18 15 12 9 6" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Add/Edit Modal */}
       {modalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-6 shadow-xl">
-            <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50 mb-4">
-              {editingId ? "Edit User" : "Add New User"}
-            </h2>
-
-            {error && (
-              <div className="mb-4 rounded-lg bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 p-3 text-sm text-red-700 dark:text-red-400">
-                {error}
-              </div>
-            )}
-
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">Name</label>
-                <input
-                  type="text"
-                  value={form.name}
-                  onChange={(e) => setForm({ ...form, name: e.target.value })}
-                  placeholder="Full name"
-                  className="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-4 py-2.5 text-sm text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">Email</label>
-                <input
-                  type="email"
-                  value={form.email}
-                  onChange={(e) => setForm({ ...form, email: e.target.value })}
-                  placeholder="user@company.com"
-                  className="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-4 py-2.5 text-sm text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">
-                  Password {editingId && "(leave blank to keep current)"}
-                </label>
-                <input
-                  type="password"
-                  value={form.password}
-                  onChange={(e) => setForm({ ...form, password: e.target.value })}
-                  placeholder={editingId ? "New password" : "Password"}
-                  className="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-4 py-2.5 text-sm text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">Role</label>
-                <select
-                  value={form.role}
-                  onChange={(e) => setForm({ ...form, role: e.target.value })}
-                  className="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-4 py-2.5 text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                >
-                  <option value="employee">Employee</option>
-                  <option value="manager">Manager</option>
-                </select>
+        <div className="modal-overlay">
+          <div className="modal-box" style={{ maxWidth: 680 }}>
+            <div className="modal-header">
+              <h2>{editingId ? "Edit Employee" : "Add New Employee"}</h2>
+              <button onClick={() => setModalOpen(false)} className="icon-btn">
+                <svg width="18" height="18" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div className="modal-body">
+              {error && (
+                <div className="alert alert-error" style={{ marginBottom: 16 }}>
+                  {error}
+                </div>
+              )}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <Field label="Full Name" required>
+                  <input type="text" value={form.fullName} onChange={(e) => setForm({ ...form, fullName: e.target.value })} placeholder="Full name" className="input" />
+                </Field>
+                <Field label="Email" required>
+                  <input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="user@company.com" className="input" />
+                </Field>
+                <Field label="Phone">
+                  <input type="text" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} placeholder="+91 98765 43210" className="input" />
+                </Field>
+                <Field label="Role">
+                  <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })} className="input">
+                    {ROLE_OPTIONS.map((r) => (<option key={r.key} value={r.key}>{r.label}</option>))}
+                  </select>
+                </Field>
+                <Field label="Department">
+                  <select value={form.departmentId} onChange={(e) => setForm({ ...form, departmentId: e.target.value })} className="input">
+                    <option value="">No department</option>
+                    {departments.map((d) => (<option key={d._id} value={d._id}>{d.name}</option>))}
+                  </select>
+                </Field>
+                <Field label="Designation">
+                  <input type="text" value={form.designation} onChange={(e) => setForm({ ...form, designation: e.target.value })} placeholder="e.g. Senior Software Engineer" className="input" />
+                </Field>
+                <Field label="Employee ID">
+                  <input type="text" value={form.employeeId} onChange={(e) => setForm({ ...form, employeeId: e.target.value })} placeholder="EMP-0001" className="input" />
+                </Field>
+                <Field label="Joining Date">
+                  <input type="date" value={form.joiningDate} onChange={(e) => setForm({ ...form, joiningDate: e.target.value })} className="input" />
+                </Field>
+                <Field label="Salary (per month)">
+                  <input type="number" min={0} value={form.salary} onChange={(e) => setForm({ ...form, salary: e.target.value })} placeholder="0" className="input" />
+                </Field>
+                <Field label="Status">
+                  <select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value as "active" | "inactive" })} className="input">
+                    <option value="active">Active</option>
+                    <option value="inactive">Inactive</option>
+                  </select>
+                </Field>
+                <Field label="Password" hint={editingId ? "Leave blank to keep current" : undefined}>
+                  <input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder={editingId ? "New password" : "At least 6 characters"} className="input" />
+                </Field>
+                <Field label="Profile Image URL">
+                  <input type="text" value={form.profileImage} onChange={(e) => setForm({ ...form, profileImage: e.target.value })} placeholder="https://..." className="input" />
+                </Field>
               </div>
             </div>
-
-            <div className="flex items-center justify-end gap-3 mt-6 pt-4 border-t border-zinc-200 dark:border-zinc-800">
-              <button
-                onClick={() => setModalOpen(false)}
-                className="px-4 py-2.5 text-sm font-medium text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleSave}
-                disabled={saving}
-                className="rounded-lg bg-indigo-600 hover:bg-indigo-700 dark:bg-indigo-500 dark:hover:bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition disabled:opacity-50"
-              >
-                {saving ? "Saving..." : editingId ? "Save Changes" : "Create User"}
+            <div className="modal-footer">
+              <button onClick={() => setModalOpen(false)} className="btn btn-ghost">Cancel</button>
+              <button onClick={handleSave} disabled={saving} className="btn btn-primary">
+                {saving ? "Saving..." : editingId ? "Save Changes" : "Create Employee"}
               </button>
             </div>
           </div>
@@ -359,49 +872,70 @@ export default function UsersPage() {
 
       {/* Delete Confirmation */}
       {deletingId && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
-          <div className="w-full max-w-sm rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-6 shadow-xl">
-            <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50 mb-2">
-              Delete User
-            </h2>
-            <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-6">
-              Are you sure you want to delete this user? This action cannot be undone.
-            </p>
-            <div className="flex items-center justify-end gap-3">
-              <button
-                onClick={() => setDeletingId(null)}
-                className="px-4 py-2.5 text-sm font-medium text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition"
-              >
-                Cancel
+        <div className="modal-overlay">
+          <div className="modal-box" style={{ maxWidth: 400 }}>
+            <div className="modal-header">
+              <h2>Delete Employee</h2>
+              <button onClick={() => setDeletingId(null)} className="icon-btn">
+                <svg width="18" height="18" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
               </button>
-              <button
-                onClick={() => handleDelete(deletingId)}
-                className="rounded-lg bg-red-600 hover:bg-red-700 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition"
-              >
-                Delete
-              </button>
+            </div>
+            <div className="modal-body">
+              <p style={{ color: "var(--fg-muted)", fontSize: 13.5, lineHeight: 1.6 }}>
+                Are you sure you want to delete this employee? This action cannot be undone.
+              </p>
+            </div>
+            <div className="modal-footer">
+              <button onClick={() => setDeletingId(null)} className="btn btn-ghost">Cancel</button>
+              <button onClick={() => handleDelete(deletingId)} className="btn btn-danger">Delete Employee</button>
             </div>
           </div>
         </div>
       )}
+    </PageShell>
+  );
+}
+
+function Field({
+  label,
+  required,
+  hint,
+  children,
+}: {
+  label: string;
+  required?: boolean;
+  hint?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--fg-muted)", marginBottom: 6, letterSpacing: "0.02em" }}>
+        {label}
+        {required && <span style={{ color: "#f43f5e" }}> *</span>}
+        {hint && <span style={{ fontSize: 11, color: "var(--fg-subtle)", fontWeight: 400 }}> ({hint})</span>}
+      </label>
+      {children}
     </div>
   );
 }
 
-function RoleBadge({ role }: { role: string }) {
-  const colors: Record<string, string> = {
-    ceo: "bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-800",
-    manager:
-      "bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800",
-    employee:
-      "bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 border-zinc-200 dark:border-zinc-700",
-  };
+const ROLE_BADGE_MAP: Record<string, string> = {
+  ceo: "badge badge-purple",
+  hr: "badge badge-rose",
+  project_manager: "badge badge-blue",
+  team_lead: "badge badge-cyan",
+  employee: "badge badge-gray",
+  accounts: "badge badge-green",
+};
 
+function RoleBadge({ role }: { role: string }) {
+  const label = ROLE_OPTIONS.find((r) => r.key === role)?.label ||
+    (role === "ceo" ? "CEO" : role);
   return (
-    <span
-      className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border ${colors[role] || colors.employee}`}
-    >
-      {role.charAt(0).toUpperCase() + role.slice(1)}
+    <span className={ROLE_BADGE_MAP[role] || "badge badge-gray"}>
+      {label}
     </span>
   );
 }

@@ -1,29 +1,26 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import mongoose from "mongoose";
 import dbConnect from "@/lib/db";
-import Attendance from "@/models/Attendance";
+import Attendance, { IAttendance } from "@/models/Attendance";
+import { requireAuth, handleApiError } from "@/lib/guards";
 
 export async function GET(request: NextRequest) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
+    const { user, companyId } = await requireAuth("attendance.read");
     await dbConnect();
 
-    const role = (session.user as any).role;
-    const userId = (session.user as any).id;
+    const userId = user._id;
+    const canViewAll = user.role === "ceo" || user.role === "hr";
     const { searchParams } = new URL(request.url);
 
     const queryUserId = searchParams.get("userId");
     const month = searchParams.get("month"); // format: YYYY-MM
 
-    const query: Record<string, any> = {};
+    const query: mongoose.QueryFilter<IAttendance> = { companyId };
 
-    // CEO can see everyone, employees see only themselves
-    if (role !== "ceo") {
+    // Users who can manage attendance see everyone (optionally filtered);
+    // everyone else sees only their own records.
+    if (!canViewAll) {
       query.userId = userId;
     } else if (queryUserId) {
       query.userId = queryUserId;
@@ -37,16 +34,17 @@ export async function GET(request: NextRequest) {
     }
 
     const records = await Attendance.find(query)
-      .populate("userId", "name email role")
+      .populate("userId", "fullName name email role")
       .sort({ date: -1 })
       .lean();
 
     // Also return today's status for the current user
     let todayRecord = null;
-    if (!queryUserId || queryUserId === userId) {
+    if (!queryUserId || queryUserId === userId.toString()) {
       const today = new Date();
       today.setHours(0, 0, 0, 0);
       todayRecord = await Attendance.findOne({
+        companyId,
         userId,
         date: today,
       }).lean();
@@ -54,10 +52,6 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({ records, todayRecord });
   } catch (error) {
-    console.error("Error fetching attendance:", error);
-    return NextResponse.json(
-      { error: "Failed to fetch attendance" },
-      { status: 500 }
-    );
+    return handleApiError(error);
   }
 }

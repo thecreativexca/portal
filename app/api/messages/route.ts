@@ -1,19 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import mongoose from "mongoose";
 import dbConnect from "@/lib/db";
 import Message from "@/models/Message";
+import User from "@/models/User";
+import { requireAuth, handleApiError } from "@/lib/guards";
+import { rateLimitByUser } from "@/lib/rateLimit";
+import { logActivity } from "@/lib/logActivity";
 
 export async function GET(request: NextRequest) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
+    const { user, companyId } = await requireAuth();
     await dbConnect();
 
-    const userId = (session.user as any).id;
+    const userId = user._id;
     const { searchParams } = new URL(request.url);
     const withUserId = searchParams.get("with");
 
@@ -22,19 +21,20 @@ export async function GET(request: NextRequest) {
     if (withUserId) {
       // Get conversation between current user and another user
       messages = await Message.find({
+        companyId,
         $or: [
           { senderId: userId, receiverId: withUserId },
           { senderId: withUserId, receiverId: userId },
         ],
       })
-        .populate("senderId", "name email avatar")
-        .populate("receiverId", "name email avatar")
+        .populate("senderId", "fullName name email profileImage")
+        .populate("receiverId", "fullName name email profileImage")
         .sort({ createdAt: 1 })
         .lean();
 
       // Mark unread messages as read
       await Message.updateMany(
-        { senderId: withUserId, receiverId: userId, read: false },
+        { companyId, senderId: withUserId, receiverId: userId, read: false },
         { read: true }
       );
     } else {
@@ -42,6 +42,7 @@ export async function GET(request: NextRequest) {
       messages = await Message.aggregate([
         {
           $match: {
+            companyId: new mongoose.Types.ObjectId(companyId),
             $or: [{ senderId: userId }, { receiverId: userId }],
           },
         },
@@ -64,18 +65,14 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({ messages });
   } catch (error) {
-    console.error("Error fetching messages:", error);
-    return NextResponse.json({ error: "Failed" }, { status: 500 });
+    return handleApiError(error);
   }
 }
 
 export async function POST(request: NextRequest) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
+    const { user, companyId } = await requireAuth();
+    rateLimitByUser(user._id.toString());
     await dbConnect();
 
     const body = await request.json();
@@ -88,20 +85,39 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Receiver must belong to the same company.
+    const receiver = await User.findOne({
+      _id: receiverId,
+      companyId,
+    }).lean();
+    if (!receiver) {
+      return NextResponse.json(
+        { error: "Recipient not found in your company" },
+        { status: 400 }
+      );
+    }
+
     const message = await Message.create({
-      senderId: (session.user as any).id,
+      companyId,
+      senderId: user._id,
       receiverId,
       text: text.trim(),
     });
 
+    await logActivity({
+      userId: user._id.toString(),
+      companyId,
+      action: "MESSAGE_SENT",
+      details: `Sent a message to ${receiver.fullName || receiver.name || receiverId}`,
+    });
+
     const populated = await Message.findById(message._id)
-      .populate("senderId", "name email")
-      .populate("receiverId", "name email")
+      .populate("senderId", "fullName name email profileImage")
+      .populate("receiverId", "fullName name email profileImage")
       .lean();
 
     return NextResponse.json({ message: populated }, { status: 201 });
   } catch (error) {
-    console.error("Error sending message:", error);
-    return NextResponse.json({ error: "Failed" }, { status: 500 });
+    return handleApiError(error);
   }
 }

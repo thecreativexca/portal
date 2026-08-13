@@ -1,57 +1,68 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import mongoose from "mongoose";
 import dbConnect from "@/lib/db";
 import Project from "@/models/Project";
 import Task from "@/models/Task";
+import { requireAuth, handleApiError } from "@/lib/guards";
 
 export async function GET() {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session || (session.user as any).role !== "ceo") {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
-    }
-
+    const { companyId } = await requireAuth("reports.read");
     await dbConnect();
 
-    const projects = await Project.find({})
-      .select("title status")
+    const projects = await Project.find({ companyId })
+      .select("projectName status")
       .lean();
 
-    const taskStats = await Task.aggregate([
-      {
-        $group: {
-          _id: { projectId: "$projectId", status: "$status" },
-          count: { $sum: 1 },
+    // Single pass over tasks, grouped by project + status. This drives both the
+    // per-project stats (avoiding an N+1 Task.find per project) and the global
+    // status distribution.
+    const companyObjectId = new mongoose.Types.ObjectId(companyId);
+    const [taskStats, statusDist] = await Promise.all([
+      Task.aggregate([
+        { $match: { companyId: companyObjectId } },
+        {
+          $group: {
+            _id: { projectId: "$projectId", status: "$status" },
+            count: { $sum: 1 },
+          },
         },
-      },
+      ]),
+      Task.aggregate([
+        { $match: { companyId: companyObjectId } },
+        { $group: { _id: "$status", count: { $sum: 1 } } },
+      ]),
     ]);
+
+    // Fold the grouped counts into per-project totals.
+    const byProject = new Map<string, { total: number; done: number }>();
+    for (const s of taskStats) {
+      const pid = s._id?.projectId ? s._id.projectId.toString() : "";
+      if (!pid) continue;
+      const entry = byProject.get(pid) || { total: 0, done: 0 };
+      entry.total += s.count;
+      if (s._id?.status === "done") entry.done += s.count;
+      byProject.set(pid, entry);
+    }
 
     // Build project stats
-    const projectStats = await Promise.all(
-      projects.map(async (p: any) => {
-        const tasks = await Task.find({ projectId: p._id }).lean();
-        const total = tasks.length;
-        const done = tasks.filter((t: any) => t.status === "done").length;
-        return {
-          _id: p._id,
-          title: p.title,
-          status: p.status,
-          totalTasks: total,
-          completedTasks: done,
-          completionPercent: total ? Math.round((done / total) * 100) : 0,
-        };
-      })
-    );
-
-    // Status distribution across all tasks
-    const statusDist = await Task.aggregate([
-      { $group: { _id: "$status", count: { $sum: 1 } } },
-    ]);
+    const projectStats = projects.map((p) => {
+      const t = byProject.get(p._id.toString()) || { total: 0, done: 0 };
+      return {
+        _id: p._id,
+        projectName: p.projectName,
+        status: p.status,
+        totalTasks: t.total,
+        completedTasks: t.done,
+        completionPercent: t.total ? Math.round((t.done / t.total) * 100) : 0,
+      };
+    });
 
     const distribution = {
+      backlog: 0,
       todo: 0,
       "in-progress": 0,
+      review: 0,
       done: 0,
     };
     statusDist.forEach((s: any) => {
@@ -64,7 +75,6 @@ export async function GET() {
       totalProjects: projects.length,
     });
   } catch (error) {
-    console.error("Error in project report:", error);
-    return NextResponse.json({ error: "Failed" }, { status: 500 });
+    return handleApiError(error);
   }
 }

@@ -1,55 +1,58 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
 import dbConnect from "@/lib/db";
 import ActivityLog from "@/models/ActivityLog";
+import { requireAuth, handleApiError } from "@/lib/guards";
+import { ok, parsePagination, paginationMeta } from "@/lib/api";
 
 export async function GET(request: NextRequest) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session || (session.user as any).role !== "ceo") {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
-    }
-
+    const { companyId } = await requireAuth("logs.read");
     await dbConnect();
 
     const { searchParams } = new URL(request.url);
     const action = searchParams.get("action");
     const userId = searchParams.get("userId");
-    const limit = parseInt(searchParams.get("limit") || "50", 10);
-    const page = parseInt(searchParams.get("page") || "1", 10);
+    const { page, pageSize, skip } = parsePagination(request.url, 50);
 
-    const query: Record<string, any> = {};
+    const query: Record<string, any> = { companyId };
 
     if (action) query.action = action;
     if (userId) query.userId = userId;
 
-    const skip = (page - 1) * limit;
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
 
-    const [logs, total] = await Promise.all([
+    const [logs, total, stats, todayLogs] = await Promise.all([
       ActivityLog.find(query)
-        .populate("userId", "name email role")
+        .populate("userId", "fullName name email role")
         .sort({ timestamp: -1 })
         .skip(skip)
-        .limit(limit)
+        .limit(pageSize)
         .lean(),
       ActivityLog.countDocuments(query),
+      // Action distribution for the current filter.
+      ActivityLog.aggregate([
+        { $match: query },
+        { $group: { _id: "$action", count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+      ]),
+      // Today's activity for the timeline summary card.
+      ActivityLog.find({ companyId, timestamp: { $gte: todayStart } })
+        .countDocuments(),
     ]);
 
-    return NextResponse.json({
-      logs,
-      pagination: {
-        total,
-        page,
-        limit,
-        totalPages: Math.ceil(total / limit),
+    return ok(
+      {
+        logs,
+        stats: {
+          total,
+          today: todayLogs,
+          byAction: stats,
+        },
       },
-    });
-  } catch (error) {
-    console.error("Error fetching logs:", error);
-    return NextResponse.json(
-      { error: "Failed to fetch activity logs" },
-      { status: 500 }
+      paginationMeta(total, page, pageSize)
     );
+  } catch (error) {
+    return handleApiError(error);
   }
 }

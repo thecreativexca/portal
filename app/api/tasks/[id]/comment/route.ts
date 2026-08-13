@@ -1,25 +1,28 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import mongoose from "mongoose";
 import dbConnect from "@/lib/db";
 import Task from "@/models/Task";
+import { requireAuth, handleApiError } from "@/lib/guards";
+import { rateLimitByUser } from "@/lib/rateLimit";
+import { logActivity } from "@/lib/logActivity";
+import { toObjectId } from "@/lib/ids";
 
-interface RouteParams {
-  params: Promise<{ id: string }>;
-}
-
-export async function POST(request: NextRequest, { params }: RouteParams) {
+export async function POST(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
+    const { user, companyId } = await requireAuth();
+    rateLimitByUser(user._id.toString());
     await dbConnect();
 
     const { id } = await params;
-    const body = await request.json();
+    const objectId = toObjectId(id);
+    if (!objectId) {
+      return NextResponse.json({ error: "Invalid task id" }, { status: 400 });
+    }
 
+    const body = await request.json();
     if (!body.text || !body.text.trim()) {
       return NextResponse.json(
         { error: "Comment text is required" },
@@ -27,32 +30,41 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       );
     }
 
-    const task = await Task.findById(id);
+    const task = await Task.findOne({ _id: objectId, companyId });
     if (!task) {
       return NextResponse.json({ error: "Task not found" }, { status: 404 });
     }
 
+    // Anyone who can see the task can comment on it (employees only on their
+    // own tasks — enforced by the task GET scoping).
     task.comments.push({
-      userId: (session.user as any).id,
+      userId: user._id,
       text: body.text.trim(),
       timestamp: new Date(),
     });
 
     await task.save();
 
-    const updated = await Task.findById(id)
-      .populate("assignedTo", "name email")
-      .populate("assignedBy", "name email")
-      .populate("projectId", "title")
-      .populate("comments.userId", "name email")
+    await logActivity({
+      userId: user._id.toString(),
+      companyId,
+      action: "TASK_COMMENTED",
+      details: `Commented on task "${task.title}"`,
+      taskId: objectId.toString(),
+    });
+
+    const updated = await Task.findById(objectId)
+      .select("-attachments.data")
+      .populate("assignedTo", "fullName name email")
+      .populate("assignedBy", "fullName name email")
+      .populate("projectId", "projectName")
+      .populate("comments.userId", "fullName name email")
+      .populate("dependencyTaskIds", "title status")
+      .populate("attachments.uploadedBy", "fullName name email")
       .lean();
 
     return NextResponse.json({ task: updated });
   } catch (error) {
-    console.error("Error adding comment:", error);
-    return NextResponse.json(
-      { error: "Failed to add comment" },
-      { status: 500 }
-    );
+    return handleApiError(error);
   }
 }

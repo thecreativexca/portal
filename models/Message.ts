@@ -1,6 +1,7 @@
 import mongoose, { Schema, Document, Model } from "mongoose";
 
 export interface IMessage extends Document {
+  companyId: mongoose.Types.ObjectId;
   senderId: mongoose.Types.ObjectId;
   receiverId: mongoose.Types.ObjectId;
   text: string;
@@ -10,6 +11,12 @@ export interface IMessage extends Document {
 
 const MessageSchema = new Schema<IMessage>(
   {
+    companyId: {
+      type: Schema.Types.ObjectId,
+      ref: "Company",
+      required: [true, "Company ID is required"],
+      index: true,
+    },
     senderId: {
       type: Schema.Types.ObjectId,
       ref: "User",
@@ -29,13 +36,11 @@ const MessageSchema = new Schema<IMessage>(
       type: Boolean,
       default: false,
     },
-    createdAt: {
-      type: Date,
-      default: Date.now,
-    },
   },
   {
-    timestamps: false,
+    // `createdAt` / `updatedAt` are managed by Mongoose (the manual `createdAt`
+    // field was removed in the production pass — timestamps now own both).
+    timestamps: true,
   }
 );
 

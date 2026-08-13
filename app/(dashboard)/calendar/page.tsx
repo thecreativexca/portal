@@ -1,10 +1,11 @@
-"use client";
+﻿"use client";
 
 import { useState, useEffect } from "react";
 import { useSession } from "next-auth/react";
 import { redirect } from "next/navigation";
 import Calendar from "react-calendar";
 import "react-calendar/dist/Calendar.css";
+import { PageShell, PageHeader, LoadingCenter } from "@/components/portal";
 
 interface TaskEvent {
   title: string;
@@ -26,7 +27,6 @@ interface DayEvents {
 }
 
 type Value = Date | null;
-type RangeValue = [Date, Date] | null;
 
 export default function CalendarPage() {
   const { data: session, status: authStatus } = useSession();
@@ -64,8 +64,12 @@ export default function CalendarPage() {
     const count = day.tasks.length + day.leaves.length;
     if (count === 0) return null;
     return (
-      <div className="flex justify-center mt-0.5">
-        <span className="flex h-5 w-5 items-center justify-center rounded-full bg-indigo-100 dark:bg-indigo-900/50 text-[10px] font-semibold text-indigo-700 dark:text-indigo-300">
+      <div style={{ display: "flex", justifyContent: "center", marginTop: 2 }}>
+        <span style={{
+          display: "flex", height: 18, width: 18, alignItems: "center", justifyContent: "center",
+          borderRadius: "50%", background: "var(--primary-light)", color: "var(--primary)",
+          fontSize: 9, fontWeight: 800,
+        }}>
           {count}
         </span>
       </div>
@@ -82,204 +86,132 @@ export default function CalendarPage() {
     return "";
   };
 
-  const handleDateClick = (value: Value, _event: any) => {
+  const handleDateClick = (value: Value) => {
     if (!value) return;
     const key = value.toISOString().split("T")[0];
-    const day = events.find((e) => e.date === key) || null;
-    setSelectedEvents(day);
+    setSelectedEvents(events.find((e) => e.date === key) || { date: key, tasks: [], leaves: [] });
   };
 
-  if (authStatus === "loading") {
-    return (
-      <div className="flex items-center justify-center min-h-[60vh]">
-        <div className="animate-spin h-8 w-8 rounded-full border-4 border-indigo-600 dark:border-indigo-400 border-t-transparent" />
-      </div>
-    );
-  }
+  if (authStatus === "loading") return <LoadingCenter />;
+
+  const selectedLabel = selectedEvents
+    ? new Date(selectedEvents.date + "T00:00:00").toLocaleDateString("en-US", {
+        weekday: "long", month: "long", day: "numeric",
+      })
+    : null;
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-zinc-900 dark:text-zinc-50">Calendar</h1>
-        <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-          View task deadlines and leave dates
-        </p>
-      </div>
+    <PageShell>
+      <PageHeader
+        title="Calendar"
+        description="View task deadlines and leave dates across the team"
+        badge={
+          <span className="date-chip">
+            <svg width="14" height="14" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75" />
+            </svg>
+            {date.toLocaleDateString("en-US", { month: "long", year: "numeric" })}
+          </span>
+        }
+      />
 
-      <div className="grid gap-6 lg:grid-cols-[1fr_350px]">
-        {/* Calendar */}
-        <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-5 shadow-sm">
-          <style jsx global>{`
-            .react-calendar {
-              width: 100%;
-              border: none;
-              background: transparent;
-              font-family: inherit;
-            }
-            .react-calendar__navigation button {
-              color: #18181b;
-              font-size: 0.95rem;
-              font-weight: 600;
-            }
-            .dark .react-calendar__navigation button {
-              color: #f4f4f5;
-            }
-            .react-calendar__navigation button:enabled:hover,
-            .react-calendar__navigation button:enabled:focus {
-              background: #e4e4e7;
-              border-radius: 8px;
-            }
-            .dark .react-calendar__navigation button:enabled:hover,
-            .dark .react-calendar__navigation button:enabled:focus {
-              background: #27272a;
-            }
-            .react-calendar__month-view__weekdays__weekday {
-              font-size: 0.75rem;
-              font-weight: 600;
-              color: #71717a;
-              text-transform: uppercase;
-              text-decoration: none;
-              padding: 0.5rem 0;
-            }
-            .dark .react-calendar__month-view__weekdays__weekday {
-              color: #a1a1aa;
-            }
-            .react-calendar__month-view__weekdays__weekday abbr {
-              text-decoration: none;
-            }
-            .react-calendar__tile {
-              padding: 0.6rem 0.25rem;
-              font-size: 0.85rem;
-              color: #18181b;
-              border-radius: 8px;
-              position: relative;
-            }
-            .dark .react-calendar__tile {
-              color: #f4f4f5;
-            }
-            .react-calendar__tile:enabled:hover,
-            .react-calendar__tile:enabled:focus {
-              background: #e4e4e7;
-            }
-            .dark .react-calendar__tile:enabled:hover,
-            .dark .react-calendar__tile:enabled:focus {
-              background: #27272a;
-            }
-            .react-calendar__tile--active {
-              background: #4f46e5 !important;
-              color: white !important;
-            }
-            .react-calendar__tile--now {
-              background: #fef3c7;
-            }
-            .dark .react-calendar__tile--now {
-              background: #422006;
-            }
-            .react-calendar__tile--now:enabled:hover {
-              background: #fde68a;
-            }
-            .dark .react-calendar__tile--now:enabled:hover {
-              background: #713f12;
-            }
-            .has-task .react-calendar__tile {
-              box-shadow: inset 0 -3px 0 #4f46e5;
-            }
-            .has-leave .react-calendar__tile {
-              box-shadow: inset 0 -3px 0 #f59e0b;
-            }
-            .has-both .react-calendar__tile {
-              box-shadow: inset 0 -3px 0 #4f46e5, inset 0 -6px 0 #f59e0b;
-            }
-            .react-calendar__month-view__days__day--weekend {
-              color: #ef4444;
-            }
-            .dark .react-calendar__month-view__days__day--weekend {
-              color: #f87171;
-            }
-            .react-calendar__tile--disabled {
-              color: #d4d4d8 !important;
-            }
-            .dark .react-calendar__tile--disabled {
-              color: #3f3f46 !important;
-            }
-          `}</style>
-          <Calendar
-            onChange={(value) => handleDateClick(value as Date, null)}
-            value={date}
-            onActiveStartDateChange={({ activeStartDate }) => activeStartDate && setDate(activeStartDate)}
-            tileContent={getTileContent}
-            tileClassName={tileClassName}
-          />
+      <div className="calendar-layout">
+        <div className="card">
+          <div className="card-header">
+            <h2>Month View</h2>
+            <div className="calendar-legend" style={{ margin: 0 }}>
+              <span className="calendar-legend-item">
+                <span className="calendar-legend-dot task" /> Tasks
+              </span>
+              <span className="calendar-legend-item">
+                <span className="calendar-legend-dot leave" /> Leave
+              </span>
+              <span className="calendar-legend-item">
+                <span className="calendar-legend-dot both" /> Both
+              </span>
+            </div>
+          </div>
+          <div className="card-body portal-calendar">
+            <Calendar
+              onChange={(value) => handleDateClick(value as Date)}
+              value={date}
+              onActiveStartDateChange={({ activeStartDate }) => activeStartDate && setDate(activeStartDate)}
+              tileContent={getTileContent}
+              tileClassName={tileClassName}
+            />
+          </div>
         </div>
 
-        {/* Side Panel */}
-        <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-5 shadow-sm">
-          <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50 mb-4">
-            {selectedEvents
-              ? new Date(selectedEvents.date + "T00:00:00").toLocaleDateString("en-US", {
-                  weekday: "long",
-                  month: "long",
-                  day: "numeric",
-                })
-              : "Click a date to see details"}
-          </h2>
-
-          {loading && (
-            <div className="animate-pulse space-y-3">
-              <div className="h-4 bg-zinc-200 dark:bg-zinc-700 rounded w-3/4" />
-              <div className="h-4 bg-zinc-200 dark:bg-zinc-700 rounded w-1/2" />
-            </div>
-          )}
-
-          {!loading && selectedEvents && (
-            <div className="space-y-4">
-              {selectedEvents.tasks.length > 0 && (
-                <div>
-                  <h3 className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider mb-2">Tasks Due</h3>
-                  <div className="space-y-2">
-                    {selectedEvents.tasks.map((t, i) => (
-                      <div key={i} className="rounded-lg bg-zinc-50 dark:bg-zinc-800 px-3 py-2">
-                        <p className="text-sm font-medium text-zinc-900 dark:text-zinc-100">{t.title}</p>
-                        <p className="text-xs text-zinc-400">{t.project}</p>
-                      </div>
-                    ))}
-                  </div>
+        <div className="card" style={{ height: "fit-content" }}>
+          <div className="card-header">
+            <h2>{selectedLabel || "Day Details"}</h2>
+          </div>
+          <div className="card-body">
+            {loading ? (
+              <div className="loading-center" style={{ padding: "24px 0" }}>
+                <div className="spinner" />
+                <span>Loading events...</span>
+              </div>
+            ) : !selectedEvents ? (
+              <div className="empty-state" style={{ padding: "24px 0" }}>
+                <div className="icon">
+                  <svg width="22" height="22" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75" />
+                  </svg>
                 </div>
-              )}
-
-              {selectedEvents.leaves.length > 0 && (
-                <div>
-                  <h3 className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider mb-2">Leave</h3>
-                  <div className="space-y-2">
-                    {selectedEvents.leaves.map((l, i) => (
-                      <div key={i} className="rounded-lg bg-amber-50 dark:bg-amber-900/20 px-3 py-2">
-                        <p className="text-sm text-zinc-900 dark:text-zinc-100">{l.reason}</p>
-                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium mt-1 ${
-                          l.status === "approved"
-                            ? "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300"
-                            : l.status === "rejected"
-                            ? "bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300"
-                            : "bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300"
-                        }`}>
-                          {l.status}
-                        </span>
-                      </div>
-                    ))}
+                <p style={{ fontWeight: 600, color: "var(--fg)" }}>Pick a date</p>
+                <p>Tap any date on the calendar to see tasks and leaves.</p>
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                {selectedEvents.tasks.length > 0 && (
+                  <div>
+                    <p className="modal-section-title" style={{ marginTop: 0 }}>Tasks Due</p>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      {selectedEvents.tasks.map((t, i) => (
+                        <div key={i} className="calendar-event-item">
+                          <p style={{ fontSize: 13.5, fontWeight: 700, color: "var(--fg)", margin: 0 }}>{t.title}</p>
+                          <p style={{ fontSize: 12, color: "var(--fg-muted)", margin: "4px 0 0" }}>{t.project}</p>
+                          <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+                            <span className="badge badge-gray" style={{ textTransform: "capitalize" }}>{t.status}</span>
+                            <span className="badge badge-blue" style={{ textTransform: "capitalize" }}>{t.priority}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                </div>
-              )}
+                )}
 
-              {selectedEvents.tasks.length === 0 && selectedEvents.leaves.length === 0 && (
-                <p className="text-sm text-zinc-400">Nothing scheduled for this day</p>
-              )}
-            </div>
-          )}
+                {selectedEvents.leaves.length > 0 && (
+                  <div>
+                    <p className="modal-section-title" style={{ marginTop: selectedEvents.tasks.length > 0 ? 20 : 0 }}>Leave</p>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      {selectedEvents.leaves.map((l, i) => (
+                        <div key={i} className="calendar-event-item leave">
+                          <p style={{ fontSize: 13.5, color: "var(--fg)", margin: 0 }}>{l.reason}</p>
+                          <span className={`badge ${
+                            l.status === "approved" ? "badge-green" :
+                            l.status === "rejected" ? "badge-rose" : "badge-amber"
+                          }`} style={{ marginTop: 8, textTransform: "capitalize" }}>
+                            {l.status}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
-          {!loading && !selectedEvents && (
-            <p className="text-sm text-zinc-400">Select any date to view tasks and leaves</p>
-          )}
+                {selectedEvents.tasks.length === 0 && selectedEvents.leaves.length === 0 && (
+                  <div className="empty-state" style={{ padding: "16px 0" }}>
+                    <p style={{ fontWeight: 600, color: "var(--fg)" }}>Nothing scheduled</p>
+                    <p>No tasks or leaves on this day.</p>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       </div>
-    </div>
+    </PageShell>
   );
 }

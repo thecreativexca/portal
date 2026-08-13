@@ -1,82 +1,126 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import mongoose from "mongoose";
 import dbConnect from "@/lib/db";
-import User from "@/models/User";
+import User, { IUser } from "@/models/User";
+import Department from "@/models/Department";
+import { requireAuth, handleApiError, isDuplicateKeyError } from "@/lib/guards";
+import { rateLimitByUser } from "@/lib/rateLimit";
 import { logActivity } from "@/lib/logActivity";
+import { ROLE_KEYS } from "@/models/Role";
+import { ok, parsePagination, paginationMeta } from "@/lib/api";
+import { validate, reqString, email, enumValue } from "@/lib/validate";
 
 export async function GET(request: NextRequest) {
   try {
-    const session = await getServerSession(authOptions);
-
-    if (!session || (session.user as any).role !== "ceo") {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
-    }
-
+    const { companyId } = await requireAuth("users.read");
     await dbConnect();
 
     const { searchParams } = new URL(request.url);
     const role = searchParams.get("role");
+    const departmentId = searchParams.get("departmentId");
+    const status = searchParams.get("status");
     const search = searchParams.get("search");
+    const { page, pageSize, skip } = parsePagination(request.url, 50);
 
-    let query: Record<string, any> = {};
+    const query: mongoose.QueryFilter<IUser> = { companyId };
 
-    if (role && ["ceo", "manager", "employee"].includes(role)) {
-      query.role = role;
+    if (role && ROLE_KEYS.includes(role as (typeof ROLE_KEYS)[number])) {
+      query.role = role as (typeof ROLE_KEYS)[number];
     }
-
+    if (departmentId) {
+      query.departmentId = departmentId;
+    }
+    if (status && ["active", "inactive"].includes(status)) {
+      query.status = status as "active" | "inactive";
+    }
     if (search) {
       query.$or = [
-        { name: { $regex: search, $options: "i" } },
+        { fullName: { $regex: search, $options: "i" } },
         { email: { $regex: search, $options: "i" } },
+        { employeeId: { $regex: search, $options: "i" } },
+        { designation: { $regex: search, $options: "i" } },
       ];
     }
 
-    const users = await User.find(query)
-      .select("-password")
-      .sort({ createdAt: -1 });
+    const [users, total] = await Promise.all([
+      User.find(query)
+        .populate("departmentId", "name")
+        .select("-password")
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(pageSize)
+        .lean(),
+      User.countDocuments(query),
+    ]);
 
-    return NextResponse.json({ users });
+    return ok({ users }, paginationMeta(total, page, pageSize));
   } catch (error) {
-    console.error("Error fetching users:", error);
-    return NextResponse.json(
-      { error: "Failed to fetch users" },
-      { status: 500 }
-    );
+    return handleApiError(error);
   }
 }
 
 export async function POST(request: NextRequest) {
   try {
-    const session = await getServerSession(authOptions);
-
-    if (!session || (session.user as any).role !== "ceo") {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
-    }
-
+    const { user: actor, companyId } = await requireAuth("users.write");
+    rateLimitByUser(actor._id.toString());
     await dbConnect();
 
     const body = await request.json();
-    const { name, email, password, role } = body;
+    const {
+      fullName,
+      email,
+      password,
+      phone,
+      role,
+      departmentId,
+      designation,
+      employeeId,
+      joiningDate,
+      salary,
+      status,
+      profileImage,
+    } = body;
 
-    if (!name || !email || !password) {
+    const err = validate(body, {
+      fullName: reqString("Full name"),
+      email: email(),
+      password: reqString("Password"),
+      role: enumValue(ROLE_KEYS, "role"),
+    });
+    if (err) {
+      return NextResponse.json({ error: err }, { status: 400 });
+    }
+
+    if (typeof password === "string" && password.length < 6) {
       return NextResponse.json(
-        { error: "Name, email, and password are required" },
+        { error: "Password must be at least 6 characters" },
         { status: 400 }
       );
     }
 
-    if (role && !["ceo", "manager", "employee"].includes(role)) {
+    // No privilege escalation: only the existing CEO may hold the CEO role.
+    if (role === "ceo") {
       return NextResponse.json(
-        { error: "Invalid role. Must be ceo, manager, or employee" },
+        { error: "The CEO role is reserved for the company owner" },
         { status: 400 }
       );
     }
 
-    // CEO cannot create another CEO
-    const finalRole = role === "ceo" ? "employee" : role || "employee";
+    // Department (if provided) must belong to the same company.
+    if (departmentId) {
+      const department = await Department.findOne({
+        _id: departmentId,
+        companyId,
+      }).lean();
+      if (!department) {
+        return NextResponse.json(
+          { error: "Department not found in your company" },
+          { status: 400 }
+        );
+      }
+    }
 
-    const existingUser = await User.findOne({ email });
+    const existingUser = await User.findOne({ companyId, email });
     if (existingUser) {
       return NextResponse.json(
         { error: "A user with this email already exists" },
@@ -85,41 +129,42 @@ export async function POST(request: NextRequest) {
     }
 
     const newUser = await User.create({
-      name,
+      companyId,
+      fullName,
+      name: fullName,
       email,
       password,
-      role: finalRole,
+      phone,
+      role: role || "employee",
+      departmentId,
+      designation,
+      employeeId,
+      joiningDate: joiningDate ? new Date(joiningDate) : undefined,
+      salary: salary !== undefined && salary !== null && salary !== "" ? Number(salary) : undefined,
+      status: status || "active",
+      profileImage,
     });
 
     await logActivity({
-      userId: (session.user as any).id,
+      userId: actor._id.toString(),
+      companyId,
       action: "CREATE_USER",
-      details: `Created user ${name} (${email}) with role ${finalRole}`,
+      details: `Created user ${fullName} (${email}) with role ${newUser.role}`,
     });
 
-    return NextResponse.json(
-      {
-        user: {
-          id: newUser._id,
-          name: newUser.name,
-          email: newUser.email,
-          role: newUser.role,
-          createdAt: newUser.createdAt,
-        },
-      },
-      { status: 201 }
-    );
-  } catch (error: any) {
-    console.error("Error creating user:", error);
-    if (error.code === 11000) {
+    const populated = await User.findById(newUser._id)
+      .populate("departmentId", "name")
+      .select("-password")
+      .lean();
+
+    return NextResponse.json({ user: populated }, { status: 201 });
+  } catch (error: unknown) {
+    if (isDuplicateKeyError(error)) {
       return NextResponse.json(
         { error: "A user with this email already exists" },
         { status: 409 }
       );
     }
-    return NextResponse.json(
-      { error: "Failed to create user" },
-      { status: 500 }
-    );
+    return handleApiError(error);
   }
 }

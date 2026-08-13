@@ -1,15 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
 import dbConnect from "@/lib/db";
 import Attendance from "@/models/Attendance";
 import User from "@/models/User";
+import { requireAuth, handleApiError } from "@/lib/guards";
 
 export async function GET(request: NextRequest) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session || (session.user as any).role !== "ceo") {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
+    const { user, companyId } = await requireAuth("reports.read");
+
+    // Company-wide attendance is only visible to roles that manage attendance.
+    if (user.role !== "ceo" && user.role !== "hr") {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
     await dbConnect();
@@ -30,16 +31,20 @@ export async function GET(request: NextRequest) {
     const toDate = new Date(to);
     toDate.setHours(23, 59, 59, 999);
 
-    const totalEmployees = await User.countDocuments({});
+    const totalEmployees = await User.countDocuments({ companyId });
     const records = await Attendance.find({
+      companyId,
       date: { $gte: fromDate, $lte: toDate },
     })
-      .populate("userId", "name email role")
+      .populate("userId", "fullName name email role")
       .sort({ date: 1 })
       .lean();
 
     // Aggregate by day
-    const dayMap = new Map<string, { present: number; halfDay: number; absent: number; total: number }>();
+    const dayMap = new Map<
+      string,
+      { present: number; halfDay: number; absent: number; total: number }
+    >();
     const today = new Date(fromDate);
     while (today <= toDate) {
       const key = today.toISOString().split("T")[0];
@@ -62,7 +67,7 @@ export async function GET(request: NextRequest) {
       .map(([date, stats]) => ({
         date,
         ...stats,
-        absent: totalEmployees - stats.present - stats.halfDay,
+        absent: Math.max(0, totalEmployees - stats.present - stats.halfDay),
       }))
       .sort((a, b) => a.date.localeCompare(b.date));
 
@@ -77,12 +82,13 @@ export async function GET(request: NextRequest) {
         totalDays,
         totalPresent,
         totalHalfDay,
-        averagePresent: totalDays ? Math.round((totalPresent / totalDays) * 10) / 10 : 0,
+        averagePresent: totalDays
+          ? Math.round((totalPresent / totalDays) * 10) / 10
+          : 0,
         totalEmployees,
       },
     });
   } catch (error) {
-    console.error("Error in attendance report:", error);
-    return NextResponse.json({ error: "Failed" }, { status: 500 });
+    return handleApiError(error);
   }
 }

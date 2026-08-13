@@ -1,12 +1,16 @@
-"use client";
+﻿"use client";
 
 import { useState, useEffect, useCallback } from "react";
 import { useSession } from "next-auth/react";
 import { redirect } from "next/navigation";
+import { PageShell, PageHeader, LoadingCenter } from "@/components/portal";
+
+const LEAVE_TYPES = ["annual", "sick", "casual", "unpaid", "other"] as const;
 
 interface LeaveRecord {
   _id: string;
   userId: { _id: string; name: string; email: string; role: string };
+  leaveType?: string;
   startDate: string;
   endDate: string;
   reason: string;
@@ -15,23 +19,60 @@ interface LeaveRecord {
   createdAt: string;
 }
 
+interface LeaveStats {
+  byStatus: Record<string, number>;
+  byType: Record<string, number>;
+}
+
+function toInputDate(iso: string): string {
+  const d = new Date(iso);
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${m}-${day}`;
+}
+
+function initials(name: string) {
+  return name
+    .split(" ")
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((p) => p[0]?.toUpperCase() || "")
+    .join("") || "?";
+}
+
+function leaveDays(start: string, end: string) {
+  const s = new Date(start);
+  const e = new Date(end);
+  const diff = Math.round((e.getTime() - s.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+  return diff > 0 ? diff : 1;
+}
+
 export default function LeavesPage() {
   const { data: session, status } = useSession();
   const role = (session?.user as any)?.role;
+  const myId = (session?.user as any)?.id;
+
+  const isManager = ["ceo", "hr", "project_manager"].includes(role);
 
   const [leaves, setLeaves] = useState<LeaveRecord[]>([]);
+  const [stats, setStats] = useState<LeaveStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<"all" | "pending">("all");
 
-  // Apply form
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ startDate: "", endDate: "", reason: "" });
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [form, setForm] = useState({
+    startDate: "",
+    endDate: "",
+    reason: "",
+    leaveType: "annual",
+  });
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
 
-  // Pagination
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
+  const [total, setTotal] = useState(0);
 
   useEffect(() => {
     if (status === "unauthenticated") redirect("/login");
@@ -49,7 +90,9 @@ export default function LeavesPage() {
       if (!res.ok) throw new Error("Failed to fetch");
       const data = await res.json();
       setLeaves(data.leaves);
-      setTotalPages(data.pagination.totalPages);
+      setTotalPages(data.pagination?.totalPages ?? 1);
+      setTotal(data.pagination?.total ?? data.leaves?.length ?? 0);
+      if (data.stats) setStats(data.stats);
     } catch (err) {
       console.error("Error fetching leaves:", err);
     } finally {
@@ -66,19 +109,21 @@ export default function LeavesPage() {
     setFormError("");
 
     try {
-      const res = await fetch("/api/leaves", {
-        method: "POST",
+      const url = editingId ? `/api/leaves/${editingId}` : "/api/leaves";
+      const res = await fetch(url, {
+        method: editingId ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(form),
       });
 
       if (!res.ok) {
         const data = await res.json();
-        throw new Error(data.error || "Failed to apply leave");
+        throw new Error(data.error || "Failed to save leave");
       }
 
       setShowForm(false);
-      setForm({ startDate: "", endDate: "", reason: "" });
+      setEditingId(null);
+      setForm({ startDate: "", endDate: "", reason: "", leaveType: "annual" });
       fetchLeaves();
     } catch (err: any) {
       setFormError(err.message);
@@ -87,12 +132,12 @@ export default function LeavesPage() {
     }
   };
 
-  const handleApproveReject = async (id: string, status: "approved" | "rejected") => {
+  const handleApproveReject = async (id: string, newStatus: "approved" | "rejected") => {
     try {
       const res = await fetch(`/api/leaves/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status }),
+        body: JSON.stringify({ status: newStatus }),
       });
 
       if (!res.ok) {
@@ -107,67 +152,147 @@ export default function LeavesPage() {
     }
   };
 
+  const handleCancel = async (id: string) => {
+    if (!window.confirm("Cancel this leave request?")) return;
+    try {
+      const res = await fetch(`/api/leaves/${id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const data = await res.json();
+        alert(data.error || "Failed to cancel leave");
+        return;
+      }
+      fetchLeaves();
+    } catch (err) {
+      console.error("Error cancelling leave:", err);
+    }
+  };
+
+  const handleEdit = (leave: LeaveRecord) => {
+    setEditingId(leave._id);
+    setForm({
+      startDate: toInputDate(leave.startDate),
+      endDate: toInputDate(leave.endDate),
+      reason: leave.reason,
+      leaveType: leave.leaveType || "annual",
+    });
+    setFormError("");
+    setShowForm(true);
+  };
+
+  const openApply = () => {
+    setEditingId(null);
+    setForm({ startDate: "", endDate: "", reason: "", leaveType: "annual" });
+    setFormError("");
+    setShowForm(true);
+  };
+
   if (status === "loading") {
-    return (
-      <div className="flex items-center justify-center min-h-[60vh]">
-        <div className="animate-spin h-8 w-8 rounded-full border-4 border-indigo-600 dark:border-indigo-400 border-t-transparent" />
-      </div>
-    );
+    return <LoadingCenter />;
   }
 
-  const pendingCount = leaves.filter((l) => l.status === "pending").length;
+  const pendingCount = stats?.byStatus?.pending ?? leaves.filter((l) => l.status === "pending").length;
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-zinc-900 dark:text-zinc-50">
-            Leave Management
-          </h1>
-          <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-            {role === "ceo"
-              ? "Review and manage employee leave requests"
-              : "Apply for leave and view your history"}
-          </p>
-        </div>
-        {role !== "ceo" && (
-          <button
-            onClick={() => setShowForm(true)}
-            className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 dark:bg-indigo-500 dark:hover:bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition"
-          >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+    <PageShell>
+      <PageHeader
+        title="Leave Management"
+        description={
+          isManager
+            ? "Review and manage employee leave requests"
+            : "Apply for leave and view your history"
+        }
+        badge={
+          total > 0 ? <span className="count-chip">{total} requests</span> : undefined
+        }
+        actions={
+          <button onClick={openApply} className="btn btn-primary">
+            <svg width="16" height="16" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
             </svg>
             Apply Leave
           </button>
-        )}
-      </div>
+        }
+      />
 
-      {/* CEO Tabs */}
-      {role === "ceo" && (
-        <div className="flex gap-1 rounded-lg bg-zinc-100 dark:bg-zinc-800 p-1 w-fit">
+      {/* Summary stats */}
+      {isManager && stats && (
+        <div className="summary-strip">
+          <div className="summary-item">
+            <div className="tile tile-sm tile-amber">
+              <svg width="15" height="15" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            </div>
+            <div>
+              <div className="summary-num">{stats.byStatus.pending ?? 0}</div>
+              <div className="summary-label">Pending</div>
+            </div>
+          </div>
+          <div className="summary-item">
+            <div className="tile tile-sm tile-green">
+              <svg width="15" height="15" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            </div>
+            <div>
+              <div className="summary-num">{stats.byStatus.approved ?? 0}</div>
+              <div className="summary-label">Approved</div>
+            </div>
+          </div>
+          <div className="summary-item">
+            <div className="tile tile-sm tile-rose">
+              <svg width="15" height="15" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </div>
+            <div>
+              <div className="summary-num">{stats.byStatus.rejected ?? 0}</div>
+              <div className="summary-label">Rejected</div>
+            </div>
+          </div>
+          {Object.keys(stats.byType).length > 0 && (
+            <div className="summary-item">
+              <div className="tile tile-sm tile-purple">
+                <svg width="15" height="15" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 002.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 00-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 00.75-.75 2.25 2.25 0 00-.1-.664m-5.8 0A2.251 2.251 0 0113.5 2.25H15c1.012 0 1.867.668 2.015 1.542l1.487 9.226A2.25 2.25 0 0116.182 13H4.818a2.25 2.25 0 01-2.015-2.542l1.487-9.226A2.25 2.25 0 018.818 2.25H10.5" />
+                </svg>
+              </div>
+              <div>
+                <div className="summary-num">{Object.values(stats.byType).reduce((a, b) => a + b, 0)}</div>
+                <div className="summary-label">By Type</div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Type breakdown chips */}
+      {isManager && stats && Object.keys(stats.byType).length > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          {Object.entries(stats.byType).map(([type, count]) => (
+            <span key={type} className="badge badge-gray" style={{ textTransform: "capitalize" }}>
+              {type}: {count}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Manager tabs */}
+      {isManager && (
+        <div className="tab-bar">
           <button
             onClick={() => { setTab("all"); setPage(1); }}
-            className={`px-4 py-2 text-sm font-medium rounded-md transition ${
-              tab === "all"
-                ? "bg-white dark:bg-zinc-700 text-zinc-900 dark:text-zinc-50 shadow-sm"
-                : "text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100"
-            }`}
+            className={`tab-btn${tab === "all" ? " active" : ""}`}
           >
             All Leaves
           </button>
           <button
             onClick={() => { setTab("pending"); setPage(1); }}
-            className={`px-4 py-2 text-sm font-medium rounded-md transition ${
-              tab === "pending"
-                ? "bg-white dark:bg-zinc-700 text-zinc-900 dark:text-zinc-50 shadow-sm"
-                : "text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100"
-            }`}
+            className={`tab-btn${tab === "pending" ? " active" : ""}`}
           >
             Pending
             {pendingCount > 0 && (
-              <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-semibold bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300">
+              <span className="badge badge-amber" style={{ fontSize: 10, padding: "1px 6px" }}>
                 {pendingCount}
               </span>
             )}
@@ -175,227 +300,316 @@ export default function LeavesPage() {
         </div>
       )}
 
-      {/* Leaves Table */}
-      <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 shadow-sm overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+      {/* Desktop table */}
+      <div className="card desktop-user-table">
+        <div className="card-header">
+          <h2>{tab === "pending" ? "Pending Requests" : "Leave Records"}</h2>
+          <span className="count-chip">{loading ? "â€”" : leaves.length} shown</span>
+        </div>
+        <div className="table-wrap">
+          <table className="table">
             <thead>
-              <tr className="border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/50">
-                {role === "ceo" && (
-                  <th className="text-left px-5 py-3.5 font-semibold text-zinc-700 dark:text-zinc-300">
-                    Employee
-                  </th>
-                )}
-                <th className="text-left px-5 py-3.5 font-semibold text-zinc-700 dark:text-zinc-300">
-                  From
-                </th>
-                <th className="text-left px-5 py-3.5 font-semibold text-zinc-700 dark:text-zinc-300">
-                  To
-                </th>
-                <th className="text-left px-5 py-3.5 font-semibold text-zinc-700 dark:text-zinc-300">
-                  Reason
-                </th>
-                <th className="text-left px-5 py-3.5 font-semibold text-zinc-700 dark:text-zinc-300">
-                  Status
-                </th>
-                {role === "ceo" && (
-                  <th className="text-right px-5 py-3.5 font-semibold text-zinc-700 dark:text-zinc-300">
-                    Actions
-                  </th>
-                )}
+              <tr>
+                {isManager && <th>Employee</th>}
+                <th>From</th>
+                <th>To</th>
+                <th>Days</th>
+                <th>Type</th>
+                <th>Reason</th>
+                <th>Status</th>
+                <th style={{ textAlign: "right" }}>Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
+            <tbody>
               {loading ? (
                 <tr>
-                  <td
-                    colSpan={role === "ceo" ? 6 : 5}
-                    className="px-5 py-12 text-center text-zinc-400"
-                  >
-                    Loading...
+                  <td colSpan={isManager ? 8 : 7} style={{ textAlign: "center", padding: "48px 20px", color: "var(--fg-subtle)" }}>
+                    <div className="loading-center" style={{ padding: 0 }}>
+                      <div className="spinner" />
+                      <span>Loading leaves...</span>
+                    </div>
                   </td>
                 </tr>
               ) : leaves.length === 0 ? (
                 <tr>
-                  <td
-                    colSpan={role === "ceo" ? 6 : 5}
-                    className="px-5 py-12 text-center text-zinc-400"
-                  >
+                  <td colSpan={isManager ? 8 : 7} style={{ textAlign: "center", padding: "48px 20px", color: "var(--fg-subtle)" }}>
                     No leave records found
                   </td>
                 </tr>
               ) : (
-                leaves.map((leave) => (
-                  <tr
-                    key={leave._id}
-                    className="hover:bg-zinc-50 dark:hover:bg-zinc-800/50 transition"
-                  >
-                    {role === "ceo" && (
-                      <td className="px-5 py-4">
-                        <div className="flex items-center gap-2">
-                          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 text-xs font-semibold">
-                            {leave.userId?.name?.charAt(0) || "?"}
+                leaves.map((leave) => {
+                  const isOwn = leave.userId?._id === myId;
+                  return (
+                    <tr key={leave._id}>
+                      {isManager && (
+                        <td>
+                          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                            <div className="avatar avatar-sm">{initials(leave.userId?.name || "?")}</div>
+                            <span style={{ fontWeight: 600, color: "var(--fg)" }}>
+                              {leave.userId?.name || "â€”"}
+                            </span>
                           </div>
-                          <span className="font-medium text-zinc-900 dark:text-zinc-100">
-                            {leave.userId?.name || "—"}
-                          </span>
+                        </td>
+                      )}
+                      <td>{new Date(leave.startDate).toLocaleDateString()}</td>
+                      <td>{new Date(leave.endDate).toLocaleDateString()}</td>
+                      <td style={{ fontWeight: 600, color: "var(--fg)" }}>
+                        {leaveDays(leave.startDate, leave.endDate)}
+                      </td>
+                      <td>
+                        <span className="badge badge-gray" style={{ textTransform: "capitalize" }}>
+                          {leave.leaveType || "annual"}
+                        </span>
+                      </td>
+                      <td style={{ maxWidth: 200 }} className="truncate">{leave.reason}</td>
+                      <td><LeaveStatusBadge status={leave.status} /></td>
+                      <td>
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 6, flexWrap: "wrap" }}>
+                          {isOwn && leave.status === "pending" && (
+                            <>
+                              <button onClick={() => handleEdit(leave)} className="btn btn-secondary" style={{ padding: "6px 12px", fontSize: 12 }}>
+                                Edit
+                              </button>
+                              <button onClick={() => handleCancel(leave._id)} className="btn btn-danger" style={{ padding: "6px 12px", fontSize: 12 }}>
+                                Cancel
+                              </button>
+                            </>
+                          )}
+                          {isManager && !isOwn && leave.status === "pending" && (
+                            <>
+                              <button onClick={() => handleApproveReject(leave._id, "approved")} className="btn btn-primary" style={{ padding: "6px 12px", fontSize: 12 }}>
+                                Approve
+                              </button>
+                              <button onClick={() => handleApproveReject(leave._id, "rejected")} className="btn btn-danger" style={{ padding: "6px 12px", fontSize: 12 }}>
+                                Reject
+                              </button>
+                            </>
+                          )}
+                          {leave.approvedBy && (
+                            <span style={{ fontSize: 11, color: "var(--fg-subtle)" }}>
+                              by {leave.approvedBy.name}
+                            </span>
+                          )}
                         </div>
                       </td>
-                    )}
-                    <td className="px-5 py-4 text-zinc-600 dark:text-zinc-400">
-                      {new Date(leave.startDate).toLocaleDateString()}
-                    </td>
-                    <td className="px-5 py-4 text-zinc-600 dark:text-zinc-400">
-                      {new Date(leave.endDate).toLocaleDateString()}
-                    </td>
-                    <td className="px-5 py-4 text-zinc-600 dark:text-zinc-400 max-w-[200px] truncate">
-                      {leave.reason}
-                    </td>
-                    <td className="px-5 py-4">
-                      <LeaveStatusBadge status={leave.status} />
-                    </td>
-                    {role === "ceo" && leave.status === "pending" && (
-                      <td className="px-5 py-4 text-right">
-                        <div className="flex items-center justify-end gap-2">
-                          <button
-                            onClick={() => handleApproveReject(leave._id, "approved")}
-                            className="rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition"
-                          >
-                            Approve
-                          </button>
-                          <button
-                            onClick={() => handleApproveReject(leave._id, "rejected")}
-                            className="rounded-lg bg-red-600 hover:bg-red-700 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition"
-                          >
-                            Reject
-                          </button>
-                        </div>
-                      </td>
-                    )}
-                    {role === "ceo" && leave.status !== "pending" && (
-                      <td className="px-5 py-4 text-right text-xs text-zinc-400">
-                        {leave.approvedBy ? `by ${leave.approvedBy.name}` : "—"}
-                      </td>
-                    )}
-                  </tr>
-                ))
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
         </div>
       </div>
 
+      {/* Mobile cards */}
+      <div className="mobile-user-list space-y-3">
+        {loading ? (
+          <div className="card">
+            <div className="loading-center" style={{ padding: "40px 20px" }}>
+              <div className="spinner" />
+              <span>Loading leaves...</span>
+            </div>
+          </div>
+        ) : leaves.length === 0 ? (
+          <div className="card">
+            <div className="empty-state">
+              <div className="icon">
+                <svg width="24" height="24" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5" />
+                </svg>
+              </div>
+              <p style={{ fontWeight: 600, color: "var(--fg)" }}>No leave records</p>
+              <p>No records found for this selection.</p>
+            </div>
+          </div>
+        ) : (
+          leaves.map((leave) => {
+            const isOwn = leave.userId?._id === myId;
+            return (
+              <div key={leave._id} className="user-card">
+                <div className="avatar avatar-sm">
+                  {isManager ? initials(leave.userId?.name || "?") : leaveDays(leave.startDate, leave.endDate)}
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <p style={{ fontWeight: 700, color: "var(--fg)", fontSize: 13.5, margin: 0 }}>
+                      {new Date(leave.startDate).toLocaleDateString()} â€“ {new Date(leave.endDate).toLocaleDateString()}
+                    </p>
+                    <LeaveStatusBadge status={leave.status} />
+                  </div>
+                  {isManager && (
+                    <p style={{ fontSize: 11.5, color: "var(--fg-subtle)", margin: "2px 0 0" }}>
+                      {leave.userId?.name}
+                    </p>
+                  )}
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
+                    <span className="badge badge-gray" style={{ fontSize: 11, textTransform: "capitalize" }}>
+                      {leave.leaveType || "annual"}
+                    </span>
+                    <span style={{ fontSize: 11, color: "var(--fg-subtle)" }}>
+                      {leaveDays(leave.startDate, leave.endDate)} day(s)
+                    </span>
+                  </div>
+                  <p style={{ fontSize: 12, color: "var(--fg-muted)", margin: "6px 0 0", lineHeight: 1.4 }}>
+                    {leave.reason}
+                  </p>
+                  <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+                    {isOwn && leave.status === "pending" && (
+                      <>
+                        <button onClick={() => handleEdit(leave)} className="btn btn-secondary" style={{ padding: "5px 10px", fontSize: 11 }}>
+                          Edit
+                        </button>
+                        <button onClick={() => handleCancel(leave._id)} className="btn btn-danger" style={{ padding: "5px 10px", fontSize: 11 }}>
+                          Cancel
+                        </button>
+                      </>
+                    )}
+                    {isManager && !isOwn && leave.status === "pending" && (
+                      <>
+                        <button onClick={() => handleApproveReject(leave._id, "approved")} className="btn btn-primary" style={{ padding: "5px 10px", fontSize: 11 }}>
+                          Approve
+                        </button>
+                        <button onClick={() => handleApproveReject(leave._id, "rejected")} className="btn btn-danger" style={{ padding: "5px 10px", fontSize: 11 }}>
+                          Reject
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
+
       {/* Pagination */}
       {totalPages > 1 && (
-        <div className="flex items-center justify-center gap-2">
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, flexWrap: "wrap" }}>
           <button
             onClick={() => setPage((p) => Math.max(1, p - 1))}
             disabled={page === 1}
-            className="px-3 py-1.5 text-sm rounded-lg border border-zinc-300 dark:border-zinc-700 text-zinc-600 dark:text-zinc-400 disabled:opacity-40 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition"
+            className="btn btn-ghost"
+            style={{ padding: "8px 16px" }}
           >
+            <svg width="13" height="13" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+              <polyline points="15 18 9 12 15 6" />
+            </svg>
             Previous
           </button>
-          <span className="text-sm text-zinc-500 dark:text-zinc-400">
+          <span style={{ fontSize: 13, color: "var(--fg-muted)" }}>
             Page {page} of {totalPages}
           </span>
           <button
             onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
             disabled={page === totalPages}
-            className="px-3 py-1.5 text-sm rounded-lg border border-zinc-300 dark:border-zinc-700 text-zinc-600 dark:text-zinc-400 disabled:opacity-40 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition"
+            className="btn btn-ghost"
+            style={{ padding: "8px 16px" }}
           >
             Next
+            <svg width="13" height="13" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+              <polyline points="9 18 15 12 9 6" />
+            </svg>
           </button>
         </div>
       )}
 
-      {/* Apply Leave Modal */}
+      {/* Apply / Edit modal */}
       {showForm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-6 shadow-xl">
-            <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50 mb-4">
-              Apply for Leave
-            </h2>
-
-            {formError && (
-              <div className="mb-4 rounded-lg bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 p-3 text-sm text-red-700 dark:text-red-400">
-                {formError}
-              </div>
-            )}
-
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">
-                  Start Date
-                </label>
-                <input
-                  type="date"
-                  value={form.startDate}
-                  onChange={(e) => setForm({ ...form, startDate: e.target.value })}
-                  className="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-4 py-2.5 text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">
-                  End Date
-                </label>
-                <input
-                  type="date"
-                  value={form.endDate}
-                  onChange={(e) => setForm({ ...form, endDate: e.target.value })}
-                  className="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-4 py-2.5 text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">
-                  Reason
-                </label>
-                <textarea
-                  value={form.reason}
-                  onChange={(e) => setForm({ ...form, reason: e.target.value })}
-                  placeholder="Explain why you need leave (min 10 characters)..."
-                  rows={3}
-                  className="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-4 py-2.5 text-sm text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
-                />
+        <div className="modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) setShowForm(false); }}>
+          <div className="modal-box" style={{ maxWidth: 480 }}>
+            <div className="modal-header">
+              <h2>{editingId ? "Edit Leave" : "Apply for Leave"}</h2>
+              <button onClick={() => setShowForm(false)} className="icon-btn">
+                <svg width="18" height="18" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div className="modal-body">
+              {formError && (
+                <div className="alert alert-error" style={{ marginBottom: 16 }}>
+                  <svg width="16" height="16" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" style={{ flexShrink: 0 }}>
+                    <circle cx="12" cy="12" r="10" />
+                    <line x1="12" y1="8" x2="12" y2="12" />
+                    <line x1="12" y1="16" x2="12.01" y2="16" />
+                  </svg>
+                  <span>{formError}</span>
+                </div>
+              )}
+              <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                <div>
+                  <label style={{ display: "block", fontSize: 13, fontWeight: 600, color: "var(--fg)", marginBottom: 6 }}>Leave Type</label>
+                  <select
+                    value={form.leaveType}
+                    onChange={(e) => setForm({ ...form, leaveType: e.target.value })}
+                    className="input"
+                  >
+                    {LEAVE_TYPES.map((t) => (
+                      <option key={t} value={t} className="capitalize">{t}</option>
+                    ))}
+                  </select>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                  <div>
+                    <label style={{ display: "block", fontSize: 13, fontWeight: 600, color: "var(--fg)", marginBottom: 6 }}>Start Date</label>
+                    <input
+                      type="date"
+                      value={form.startDate}
+                      onChange={(e) => setForm({ ...form, startDate: e.target.value })}
+                      className="input"
+                    />
+                  </div>
+                  <div>
+                    <label style={{ display: "block", fontSize: 13, fontWeight: 600, color: "var(--fg)", marginBottom: 6 }}>End Date</label>
+                    <input
+                      type="date"
+                      value={form.endDate}
+                      onChange={(e) => setForm({ ...form, endDate: e.target.value })}
+                      className="input"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label style={{ display: "block", fontSize: 13, fontWeight: 600, color: "var(--fg)", marginBottom: 6 }}>Reason</label>
+                  <textarea
+                    value={form.reason}
+                    onChange={(e) => setForm({ ...form, reason: e.target.value })}
+                    placeholder="Explain why you need leave (min 10 characters)..."
+                    rows={3}
+                    className="input"
+                    style={{ resize: "none" }}
+                  />
+                </div>
               </div>
             </div>
-
-            <div className="flex items-center justify-end gap-3 mt-6 pt-4 border-t border-zinc-200 dark:border-zinc-800">
-              <button
-                onClick={() => setShowForm(false)}
-                className="px-4 py-2.5 text-sm font-medium text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition"
-              >
+            <div className="modal-footer">
+              <button onClick={() => setShowForm(false)} className="btn btn-ghost">
                 Cancel
               </button>
-              <button
-                onClick={handleApply}
-                disabled={saving}
-                className="rounded-lg bg-indigo-600 hover:bg-indigo-700 dark:bg-indigo-500 dark:hover:bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition disabled:opacity-50"
-              >
-                {saving ? "Submitting..." : "Submit Request"}
+              <button onClick={handleApply} disabled={saving} className="btn btn-primary">
+                {saving ? (
+                  <>
+                    <span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} />
+                    Saving...
+                  </>
+                ) : editingId ? "Save Changes" : "Submit Request"}
               </button>
             </div>
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }
 
 function LeaveStatusBadge({ status }: { status: string }) {
-  const colors: Record<string, string> = {
-    pending: "bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800",
-    approved:
-      "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800",
-    rejected:
-      "bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 border-red-200 dark:border-red-800",
+  const map: Record<string, string> = {
+    pending: "badge badge-amber",
+    approved: "badge badge-green",
+    rejected: "badge badge-rose",
   };
-
   return (
-    <span
-      className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border capitalize ${
-        colors[status] || ""
-      }`}
-    >
+    <span className={map[status] || "badge badge-gray"} style={{ textTransform: "capitalize" }}>
       {status}
     </span>
   );

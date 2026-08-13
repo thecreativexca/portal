@@ -30,16 +30,31 @@ export async function proxy(request: NextRequest) {
 
   const role = token.role as string;
 
-  // CEO-only routes
-  if (pathname.startsWith("/admin") || pathname.startsWith("/settings") || pathname.startsWith("/users") || pathname.startsWith("/logs")) {
+  // Coarse page-level gating. Fine-grained enforcement happens in the API
+  // layer via permission checks (lib/guards.ts).
+  const isPeopleManagement =
+    pathname.startsWith("/users") ||
+    pathname.startsWith("/departments") ||
+    pathname.startsWith("/roles");
+
+  if (isPeopleManagement && role !== "ceo" && role !== "hr") {
+    return NextResponse.redirect(new URL("/", request.url));
+  }
+
+  // CEO-only pages
+  if (
+    pathname.startsWith("/settings") ||
+    pathname.startsWith("/logs") ||
+    pathname.startsWith("/admin")
+  ) {
     if (role !== "ceo") {
       return NextResponse.redirect(new URL("/", request.url));
     }
   }
 
-  // Manager+ routes
+  // Reports — any role holding reports.read
   if (pathname.startsWith("/reports")) {
-    if (role !== "ceo" && role !== "manager") {
+    if (!["ceo", "hr", "project_manager"].includes(role)) {
       return NextResponse.redirect(new URL("/", request.url));
     }
   }
@@ -48,5 +63,5 @@ export async function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+  matcher: ["/((?!api|_next/static|_next/image|favicon.ico).*)"],
 };

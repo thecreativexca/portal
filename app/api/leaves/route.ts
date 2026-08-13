@@ -1,31 +1,32 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import mongoose from "mongoose";
 import dbConnect from "@/lib/db";
-import Leave from "@/models/Leave";
+import Leave, { LEAVE_TYPES } from "@/models/Leave";
+import { requireAuth, handleApiError } from "@/lib/guards";
+import { rateLimitByUser } from "@/lib/rateLimit";
 import { logActivity } from "@/lib/logActivity";
+import { parsePagination, paginationMeta } from "@/lib/api";
+import { validate, reqString, enumValue } from "@/lib/validate";
 
 export async function GET(request: NextRequest) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
+    const { user, companyId } = await requireAuth("leaves.read");
     await dbConnect();
 
-    const role = (session.user as any).role;
-    const userId = (session.user as any).id;
+    const userId = user._id;
+    const canViewAll =
+      user.role === "ceo" ||
+      user.role === "hr" ||
+      user.role === "project_manager";
     const { searchParams } = new URL(request.url);
 
     const status = searchParams.get("status");
-    const page = parseInt(searchParams.get("page") || "1", 10);
-    const limit = parseInt(searchParams.get("limit") || "50", 10);
+    const { page, pageSize, skip } = parsePagination(request.url, 50);
 
-    const query: Record<string, any> = {};
+    const query: Record<string, any> = { companyId };
 
-    // CEO sees all, others see only their own
-    if (role !== "ceo") {
+    // Only roles that can view everyone see all; others see only their own.
+    if (!canViewAll) {
       query.userId = userId;
     }
 
@@ -33,58 +34,72 @@ export async function GET(request: NextRequest) {
       query.status = status;
     }
 
-    const skip = (page - 1) * limit;
+    const match: Record<string, any> = {
+      companyId: new mongoose.Types.ObjectId(companyId),
+    };
+    if (query.userId) match.userId = query.userId;
 
-    const [leaves, total] = await Promise.all([
+    const [leaves, total, stats] = await Promise.all([
       Leave.find(query)
-        .populate("userId", "name email role")
-        .populate("approvedBy", "name email")
+        .populate("userId", "fullName name email role")
+        .populate("approvedBy", "fullName name email")
         .sort({ createdAt: -1 })
         .skip(skip)
-        .limit(limit)
+        .limit(pageSize)
         .lean(),
       Leave.countDocuments(query),
+      Leave.aggregate([
+        { $match: match },
+        {
+          $facet: {
+            byStatus: [{ $group: { _id: "$status", count: { $sum: 1 } } }],
+            byType: [{ $group: { _id: "$leaveType", count: { $sum: 1 } } }],
+          },
+        },
+      ]),
     ]);
+
+    const byStatus: Record<string, number> = { pending: 0, approved: 0, rejected: 0 };
+    const byType: Record<string, number> = {};
+    (stats[0]?.byStatus || []).forEach((s: any) => {
+      if (s._id in byStatus) byStatus[s._id] = s.count;
+    });
+    (stats[0]?.byType || []).forEach((t: any) => {
+      const key = t._id || "annual";
+      byType[key] = (byType[key] || 0) + t.count;
+    });
 
     return NextResponse.json({
       leaves,
-      pagination: {
-        total,
-        page,
-        limit,
-        totalPages: Math.ceil(total / limit),
-      },
+      ...paginationMeta(total, page, pageSize),
+      stats: { byStatus, byType },
     });
   } catch (error) {
-    console.error("Error fetching leaves:", error);
-    return NextResponse.json(
-      { error: "Failed to fetch leaves" },
-      { status: 500 }
-    );
+    return handleApiError(error);
   }
 }
 
 export async function POST(request: NextRequest) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
+    const { user, companyId } = await requireAuth();
+    rateLimitByUser(user._id.toString());
     await dbConnect();
 
-    const userId = (session.user as any).id;
+    const userId = user._id;
     const body = await request.json();
-    const { startDate, endDate, reason } = body;
+    const { startDate, endDate, reason, leaveType } = body;
 
-    if (!startDate || !endDate || !reason) {
-      return NextResponse.json(
-        { error: "Start date, end date, and reason are required" },
-        { status: 400 }
-      );
+    const err = validate(body, {
+      startDate: reqString("Start date"),
+      endDate: reqString("End date"),
+      reason: reqString("Reason"),
+      leaveType: enumValue(LEAVE_TYPES, "leave type"),
+    });
+    if (err) {
+      return NextResponse.json({ error: err }, { status: 400 });
     }
 
-    if (reason.length < 10) {
+    if (typeof reason === "string" && reason.length < 10) {
       return NextResponse.json(
         { error: "Reason must be at least 10 characters" },
         { status: 400 }
@@ -102,7 +117,9 @@ export async function POST(request: NextRequest) {
     }
 
     const leave = await Leave.create({
+      companyId,
       userId,
+      leaveType: leaveType || "annual",
       startDate: start,
       endDate: end,
       reason,
@@ -110,17 +127,14 @@ export async function POST(request: NextRequest) {
     });
 
     await logActivity({
-      userId,
+      userId: userId.toString(),
+      companyId,
       action: "APPLY_LEAVE",
       details: `Applied leave from ${startDate} to ${endDate}`,
     });
 
     return NextResponse.json({ leave }, { status: 201 });
   } catch (error) {
-    console.error("Error applying leave:", error);
-    return NextResponse.json(
-      { error: "Failed to apply leave" },
-      { status: 500 }
-    );
+    return handleApiError(error);
   }
 }

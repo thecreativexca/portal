@@ -2,6 +2,15 @@ import type { NextAuthOptions } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 import dbConnect from "./db";
 import User from "@/models/User";
+import { rateLimit, clientKey, RATE_LIMIT_TIERS } from "./rateLimit";
+
+/** Extra fields carried on the JWT/session user by this app. */
+interface SessionUserExt {
+  id?: string;
+  role?: string;
+  companyId?: string;
+  departmentId?: string;
+}
 
 export const authOptions: NextAuthOptions = {
   providers: [
@@ -11,7 +20,13 @@ export const authOptions: NextAuthOptions = {
         email: { label: "Email", type: "email" },
         password: { label: "Password", type: "password" },
       },
-      async authorize(credentials) {
+      async authorize(credentials, req) {
+        // Brute-force protection: limit login attempts per client IP.
+        rateLimit(
+          clientKey(undefined, req as unknown as Request),
+          RATE_LIMIT_TIERS.auth
+        );
+
         if (!credentials?.email || !credentials?.password) {
           throw new Error("Email and password are required");
         }
@@ -37,9 +52,13 @@ export const authOptions: NextAuthOptions = {
         return {
           id: user._id.toString(),
           email: user.email,
-          name: user.name,
+          name: user.fullName || user.name,
           role: user.role,
-          image: user.avatar,
+          companyId: user.companyId ? user.companyId.toString() : undefined,
+          departmentId: user.departmentId
+            ? user.departmentId.toString()
+            : undefined,
+          image: user.profileImage,
         };
       },
     }),
@@ -47,15 +66,21 @@ export const authOptions: NextAuthOptions = {
   callbacks: {
     async jwt({ token, user }) {
       if (user) {
+        const ext = user as SessionUserExt;
         token.id = user.id;
-        token.role = (user as any).role;
+        token.role = ext.role;
+        token.companyId = ext.companyId;
+        token.departmentId = ext.departmentId;
       }
       return token;
     },
     async session({ session, token }) {
       if (session.user) {
-        (session.user as any).id = token.id;
-        (session.user as any).role = token.role;
+        const ext = session.user as SessionUserExt;
+        ext.id = token.id as string | undefined;
+        ext.role = token.role as string | undefined;
+        ext.companyId = token.companyId as string | undefined;
+        ext.departmentId = token.departmentId as string | undefined;
       }
       return session;
     },
