@@ -1,5 +1,6 @@
 import dbConnect from "./db";
 import ActivityLog from "@/models/ActivityLog";
+import { notifyForActivity } from "./activityNotifications";
 
 interface LogEntry {
   userId: string;
@@ -8,6 +9,10 @@ interface LogEntry {
   details: string;
   /** Optional task link so the task drawer can show its own activity feed. */
   taskId?: string;
+  /** Also notify specific users (e.g. a newly added project member). */
+  notifyUserIds?: string[];
+  /** Skip auto-notification when the caller handles it separately. */
+  skipNotify?: boolean;
 }
 
 export async function logActivity({
@@ -16,6 +21,8 @@ export async function logActivity({
   action,
   details,
   taskId,
+  notifyUserIds,
+  skipNotify,
 }: LogEntry) {
   try {
     await dbConnect();
@@ -30,5 +37,13 @@ export async function logActivity({
   } catch (error) {
     console.error("Failed to log activity:", error);
     // Don't throw — logging should never break the main flow
+  }
+
+  if (!skipNotify) {
+    try {
+      await notifyForActivity(action, companyId, userId, details, notifyUserIds);
+    } catch (error) {
+      console.error("Failed to dispatch activity notification:", error);
+    }
   }
 }

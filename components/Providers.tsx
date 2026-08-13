@@ -4,6 +4,7 @@ import { SessionProvider } from "next-auth/react";
 import { ReactNode } from "react";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { Toaster } from "react-hot-toast";
+import NotificationWatcher from "@/components/NotificationWatcher";
 
 interface Props {
   children: ReactNode;
@@ -14,6 +15,7 @@ export default function Providers({ children }: Props) {
     <SessionProvider>
       <ThemeProvider>
         {children}
+        <NotificationWatcher />
         <Toaster
           position="top-right"
           toastOptions={{

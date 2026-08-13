@@ -69,6 +69,7 @@ export async function POST(
       companyId,
       action: "ADD_TEAM_MEMBER",
       details: `Added ${member.fullName || member.name} to project "${project.projectName}"`,
+      notifyUserIds: [memberId],
     });
 
     return NextResponse.json({ project: populated });
@@ -121,6 +122,7 @@ export async function DELETE(
       companyId,
       action: "REMOVE_TEAM_MEMBER",
       details: `Removed a team member from project "${project.projectName}"`,
+      notifyUserIds: memberId ? [memberId] : undefined,
     });
 
     return NextResponse.json({ project: populated });

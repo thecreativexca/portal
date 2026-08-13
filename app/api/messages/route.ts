@@ -6,6 +6,7 @@ import User from "@/models/User";
 import { requireAuth, handleApiError } from "@/lib/guards";
 import { rateLimitByUser } from "@/lib/rateLimit";
 import { logActivity } from "@/lib/logActivity";
+import { notifyUser } from "@/lib/notify";
 
 export async function GET(request: NextRequest) {
   try {
@@ -110,6 +111,18 @@ export async function POST(request: NextRequest) {
       action: "MESSAGE_SENT",
       details: `Sent a message to ${receiver.fullName || receiver.name || receiverId}`,
     });
+
+    const senderName = user.fullName || user.name || "Someone";
+    if (receiverId !== user._id.toString()) {
+      await notifyUser({
+        companyId,
+        userId: receiverId,
+        title: "New message",
+        message: `${senderName}: ${text.trim().slice(0, 120)}`,
+        type: "message",
+        link: "/messages",
+      });
+    }
 
     const populated = await Message.findById(message._id)
       .populate("senderId", "fullName name email profileImage")

@@ -209,7 +209,7 @@ export async function POST(request: NextRequest) {
       userId: actor._id.toString(),
       companyId,
       action: "CREATE_INVOICE",
-      details: `Created invoice ${finalNumber} for ${client.clientName}`,
+      details: `Created invoice ${finalNumber} for ${client.clientName} (${amountValue})`,
     });
 
     const [created] = await Invoice.aggregate(

@@ -6,6 +6,7 @@ import User from "@/models/User";
 import { requireAuth, handleApiError } from "@/lib/guards";
 import { rateLimitByUser } from "@/lib/rateLimit";
 import { logActivity } from "@/lib/logActivity";
+import { notifyUser } from "@/lib/notify";
 import { loggedMinutesByTask } from "@/lib/taskTime";
 import { validate, reqString, enumValue } from "@/lib/validate";
 
@@ -198,6 +199,17 @@ export async function POST(request: NextRequest) {
       details: `Created task "${title}" in project "${project.projectName}"`,
       taskId: task._id.toString(),
     });
+
+    if (assignedTo !== user._id.toString()) {
+      await notifyUser({
+        companyId,
+        userId: assignedTo,
+        title: "New task assigned",
+        message: `You were assigned "${title}" in ${project.projectName}`,
+        type: "task",
+        link: "/tasks",
+      });
+    }
 
     return NextResponse.json({ task: populated }, { status: 201 });
   } catch (error) {

@@ -153,6 +153,7 @@ export async function POST(request: NextRequest) {
       companyId,
       action: "CREATE_PAYROLL",
       details: `Created payroll for ${employee.fullName} (${month})`,
+      notifyUserIds: [userId],
     });
 
     const populated = await Payroll.findById(record._id)

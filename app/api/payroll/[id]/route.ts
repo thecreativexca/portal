@@ -8,6 +8,7 @@ import Payroll, {
 import { requireAuth, handleApiError } from "@/lib/guards";
 import { rateLimitByUser } from "@/lib/rateLimit";
 import { logActivity } from "@/lib/logActivity";
+import { notifyUser } from "@/lib/notify";
 import { toObjectId } from "@/lib/ids";
 
 export async function GET(
@@ -119,6 +120,20 @@ export async function PATCH(
     })
       .populate("userId", "fullName name email designation employeeId role")
       .lean();
+
+    if (
+      body.paymentStatus === "paid" &&
+      existing.paymentStatus !== "paid"
+    ) {
+      await notifyUser({
+        companyId,
+        userId: existing.userId.toString(),
+        title: "Salary paid",
+        message: `Your salary for ${existing.month} has been marked as paid`,
+        type: "payroll",
+        link: "/payroll",
+      });
+    }
 
     await logActivity({
       userId: actor._id.toString(),

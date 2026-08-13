@@ -5,6 +5,7 @@ import Task from "@/models/Task";
 import { requireAuth, handleApiError } from "@/lib/guards";
 import { rateLimitByUser } from "@/lib/rateLimit";
 import { logActivity } from "@/lib/logActivity";
+import { notifyUser } from "@/lib/notify";
 import { toObjectId } from "@/lib/ids";
 
 export async function POST(
@@ -52,6 +53,24 @@ export async function POST(
       details: `Commented on task "${task.title}"`,
       taskId: objectId.toString(),
     });
+
+    const actorName = user.fullName || user.name || "Someone";
+    const notifyIds = new Set<string>();
+    const assigneeId = task.assignedTo.toString();
+    const managerId = task.assignedBy?.toString();
+    if (assigneeId !== user._id.toString()) notifyIds.add(assigneeId);
+    if (managerId && managerId !== user._id.toString()) notifyIds.add(managerId);
+
+    for (const userId of notifyIds) {
+      await notifyUser({
+        companyId,
+        userId,
+        title: "New comment on task",
+        message: `${actorName} commented on "${task.title}"`,
+        type: "task",
+        link: "/tasks",
+      });
+    }
 
     const updated = await Task.findById(objectId)
       .select("-attachments.data")

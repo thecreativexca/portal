@@ -8,7 +8,7 @@ import { rateLimitByUser } from "@/lib/rateLimit";
 import { logActivity } from "@/lib/logActivity";
 import { ROLE_KEYS } from "@/models/Role";
 import { ok, parsePagination, paginationMeta } from "@/lib/api";
-import { validate, reqString, email, enumValue } from "@/lib/validate";
+import { validate, reqString, email as emailValidator, enumValue } from "@/lib/validate";
 
 export async function GET(request: NextRequest) {
   try {
@@ -83,7 +83,7 @@ export async function POST(request: NextRequest) {
 
     const err = validate(body, {
       fullName: reqString("Full name"),
-      email: email(),
+      email: emailValidator(),
       password: reqString("Password"),
       role: enumValue(ROLE_KEYS, "role"),
     });

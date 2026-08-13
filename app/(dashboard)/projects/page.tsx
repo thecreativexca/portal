@@ -396,7 +396,7 @@ export default function ProjectsPage() {
 
       {/* Cards */}
       {loading ? (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="project-skeleton-grid">
           {[...Array(3)].map((_, i) => (
             <div key={i} className="card" style={{ padding: 20 }}>
               <div className="skeleton" style={{ height: 44, width: 44, marginBottom: 14, borderRadius: 12 }} />
@@ -421,44 +421,44 @@ export default function ProjectsPage() {
               {hasFilters
                 ? "Try clearing the filters."
                 : canManage
-                ? "Click â€œNew Projectâ€ to create one."
+                ? 'Click "New Project" to create one.'
                 : "Projects will appear here once created."}
             </p>
           </div>
         </div>
       ) : (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="project-grid">
           {projects.map((p) => {
             const alert =
               p.status === "completed"
                 ? null
                 : p.overdue
                 ? {
-                    type: "delayed",
+                    type: "delayed" as const,
                     text:
                       p.milestoneSummary.overdue > 0
                         ? `${p.milestoneSummary.overdue} overdue milestone${p.milestoneSummary.overdue === 1 ? "" : "s"}`
                         : "Past deadline",
                   }
                 : p.daysUntilEnd !== null && p.daysUntilEnd <= 7
-                ? { type: "due", text: `Due in ${p.daysUntilEnd} day${p.daysUntilEnd === 1 ? "" : "s"}` }
+                ? { type: "due" as const, text: `Due in ${p.daysUntilEnd} day${p.daysUntilEnd === 1 ? "" : "s"}` }
                 : null;
 
             return (
-              <div key={p._id} className="card card-hover flex flex-col">
-                <Link href={`/projects/${p._id}`} className="block p-5 flex-1">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="flex items-center gap-3 min-w-0">
+              <div key={p._id} className="card card-hover project-card">
+                <Link href={`/projects/${p._id}`} className="project-card-link">
+                  <div className="project-card-top">
+                    <div className="project-card-identity">
                       <div className="dept-icon" style={{ background: "linear-gradient(135deg,#1d6af5,#0ea5e9)", width: 42, height: 42, fontSize: 13 }}>
                         {initials(p.projectName)}
                       </div>
-                      <div className="min-w-0">
-                        <h3 style={{ fontWeight: 700, fontSize: 14, color: "var(--fg)", margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      <div style={{ minWidth: 0 }}>
+                        <h3 className="project-card-title">
                           {p.projectName || "Untitled Project"}
                         </h3>
-                        <p style={{ fontSize: 11.5, color: "var(--fg-subtle)", margin: "2px 0 0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {p.projectCode || "â€”"}
-                          {p.clientId ? ` Â· ${p.clientId.clientName}` : ""}
+                        <p className="project-card-meta">
+                          {p.projectCode || "—"}
+                          {p.clientId ? ` · ${p.clientId.clientName}` : ""}
                         </p>
                       </div>
                     </div>
@@ -467,32 +467,12 @@ export default function ProjectsPage() {
                     </span>
                   </div>
 
-                  <p style={{ fontSize: 12.5, color: "var(--fg-muted)", margin: "10px 0 0", lineHeight: 1.55 }} className="line-clamp-2">
-                    {p.description}
-                  </p>
+                  {p.description ? (
+                    <p className="project-card-desc">{p.description}</p>
+                  ) : null}
 
-                  {/* Deadline alert */}
                   {alert && (
-                    <div
-                      style={{
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: 6,
-                        marginTop: 12,
-                        padding: "5px 10px",
-                        borderRadius: 8,
-                        fontSize: 11.5,
-                        fontWeight: 600,
-                        background:
-                          alert.type === "delayed"
-                            ? "rgba(244,63,94,0.10)"
-                            : "rgba(245,158,11,0.12)",
-                        color:
-                          alert.type === "delayed"
-                            ? "#e11d48"
-                            : "#d97706",
-                      }}
-                    >
+                    <div className={`project-card-alert ${alert.type}`}>
                       <svg width="13" height="13" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
                       </svg>
@@ -500,33 +480,26 @@ export default function ProjectsPage() {
                     </div>
                   )}
 
-                  {/* Progress */}
-                  <div style={{ marginTop: 14 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, marginBottom: 6 }}>
-                      <span style={{ color: "var(--fg-muted)" }}>Progress</span>
-                      <span style={{ fontWeight: 700, color: "var(--fg)" }}>{p.progress}%</span>
+                  <div className="project-card-progress">
+                    <div className="project-card-progress-head">
+                      <span>Progress</span>
+                      <strong>{p.progress}%</strong>
                     </div>
-                    <div style={{ height: 7, borderRadius: 99, background: "var(--bg-card2)", overflow: "hidden" }}>
+                    <div className="progress-bar">
                       <div
-                        style={{
-                          height: "100%",
-                          borderRadius: 99,
-                          background: progressColor(p.progress),
-                          transition: "width 0.3s ease",
-                          width: `${p.progress}%`,
-                        }}
+                        className="progress-fill"
+                        style={{ width: `${p.progress}%`, background: progressColor(p.progress) }}
                       />
                     </div>
                   </div>
 
-                  {/* Milestones + tasks + health */}
-                  <div style={{ marginTop: 12, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, fontSize: 11.5, color: "var(--fg-muted)" }}>
+                  <div className="project-card-stats">
                     <span>
                       {p.milestoneSummary.total > 0
                         ? `${p.milestoneSummary.completed}/${p.milestoneSummary.total} milestones`
                         : "No milestones"}
                       {p.milestoneSummary.overdue > 0 && (
-                        <span style={{ color: "#e11d48", fontWeight: 600 }}> Â· {p.milestoneSummary.overdue} overdue</span>
+                        <span className="overdue"> · {p.milestoneSummary.overdue} overdue</span>
                       )}
                     </span>
                     <span>
@@ -537,55 +510,55 @@ export default function ProjectsPage() {
                     </span>
                   </div>
 
-                  {/* Budget / hours */}
-                  {(p.budget || p.estimatedHours) && (
-                    <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 11.5 }}>
-                      <span style={{ color: "var(--fg-muted)" }}>
-                        Budget <span style={{ fontWeight: 700, color: "var(--fg)" }}>{fmt(p.budget || 0)}</span>
+                  {(p.budget || p.estimatedHours) ? (
+                    <div className="project-card-budget">
+                      <span>
+                        Budget <strong>{fmt(p.budget || 0)}</strong>
                       </span>
                       {p.estimatedHours ? (
-                        <span style={{ fontWeight: 600, color: p.hoursUtilizationPct && p.hoursUtilizationPct > 100 ? "#e11d48" : "var(--fg-muted)" }}>
+                        <span className={p.hoursUtilizationPct && p.hoursUtilizationPct > 100 ? "over-hours" : ""}>
                           {Math.round(p.actualHours || 0)}/{p.estimatedHours} hrs
                         </span>
                       ) : null}
                     </div>
-                  )}
+                  ) : null}
                 </Link>
 
-                {/* Team avatars + PM */}
-                <div style={{ padding: "0 20px 14px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 4, minWidth: 0 }}>
-                    {p.teamMemberIds.slice(0, 4).map((m) => (
+                <div className="project-card-footer">
+                  <div className="project-card-team">
+                    {(p.teamMemberIds || []).slice(0, 4).map((m) => (
                       <span
                         key={m._id}
                         className="avatar avatar-sm tile-blue"
-                        style={{ width: 26, height: 26, fontSize: 10, boxShadow: "none", border: "2px solid var(--bg-card)" }}
                         title={m.fullName || m.name}
                       >
                         {(m.fullName || m.name).charAt(0).toUpperCase()}
                       </span>
                     ))}
-                    {p.teamMemberIds.length > 4 && (
+                    {(p.teamMemberIds || []).length > 4 && (
                       <span style={{ fontSize: 11, color: "var(--fg-subtle)", marginLeft: 2 }}>
                         +{p.teamMemberIds.length - 4}
                       </span>
                     )}
                     {p.projectManagerId && (
-                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, color: "var(--fg-muted)", marginLeft: 6, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title="Project manager">
-                        <svg width="12" height="12" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" style={{ color: "var(--primary)", flexShrink: 0 }}>
+                      <span className="project-card-pm" title="Project manager">
+                        <svg width="12" height="12" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
                           <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                         </svg>
                         {p.projectManagerId.name || p.projectManagerId.fullName}
                       </span>
                     )}
                   </div>
-                  <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: PRIORITY_COLOR[p.priority] || "#8ba3be", flexShrink: 0 }}>
+                  <span
+                    className="project-card-priority"
+                    style={{ color: PRIORITY_COLOR[p.priority] || "#8ba3be" }}
+                  >
                     {p.priority}
                   </span>
                 </div>
 
                 {canManage && (
-                  <div style={{ padding: "0 14px 12px", display: "flex", justifyContent: "flex-end", gap: 2, borderTop: "1px solid var(--border)", paddingTop: 8 }}>
+                  <div className="project-card-actions">
                     <button
                       onClick={(e) => {
                         e.preventDefault();

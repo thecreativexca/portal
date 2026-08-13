@@ -152,7 +152,7 @@ export async function POST(request: NextRequest) {
       userId: actor._id.toString(),
       companyId,
       action: "CREATE_EXPENSE",
-      details: `Recorded ${amountValue} expense (${category})`,
+      details: `${actor.fullName || actor.name || "Someone"} recorded a ${category} expense of ${amountValue}`,
     });
 
     const populated = await Expense.findById(expense._id)

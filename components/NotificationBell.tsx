@@ -1,29 +1,57 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { useSession } from "next-auth/react";
 import Link from "next/link";
+import NotificationTypeIcon from "@/components/NotificationTypeIcon";
+import {
+  type NotificationData,
+  formatNotificationTime,
+  notificationTypeAccent,
+} from "@/lib/notifications";
 
-interface NotificationData {
-  _id: string;
-  title: string;
-  message: string;
-  type: string;
-  isRead: boolean;
-  link?: string;
-  createdAt: string;
+const DROPDOWN_WIDTH = 340;
+const VIEWPORT_PAD = 12;
+
+type DropdownPos =
+  | { top: number; left: number; right: "auto"; width: number }
+  | { top: number; left: "auto"; right: number; width: number };
+
+function clampDropdownPosition(rect: DOMRect): DropdownPos {
+  const vw = window.innerWidth;
+  const isMobile = vw < 1024;
+  const dropdownWidth = Math.min(DROPDOWN_WIDTH, vw - VIEWPORT_PAD * 2);
+  const top = rect.bottom + 8;
+
+  if (isMobile) {
+    const right = Math.max(VIEWPORT_PAD, vw - rect.right);
+    return { top, right, left: "auto" as const, width: dropdownWidth };
+  }
+
+  // Desktop sidebar: prefer opening into the main content (to the right of the bell).
+  let left = rect.right + 8;
+  if (left + dropdownWidth > vw - VIEWPORT_PAD) {
+    left = rect.right - dropdownWidth;
+  }
+  left = Math.max(VIEWPORT_PAD, Math.min(left, vw - dropdownWidth - VIEWPORT_PAD));
+
+  return { top, left, right: "auto" as const, width: dropdownWidth };
 }
 
 /**
- * Bell in the sidebar header. Polls for new notifications every 15 seconds and
- * shows the unread count as a badge; opens a small dropdown with the latest few.
+ * Bell in the sidebar / mobile header. Polls every 10s and shows a portal
+ * dropdown anchored to the bell so it never overlaps the sidebar on mobile.
  */
 export default function NotificationBell() {
-  const { data: session, status } = useSession();
+  const { status } = useSession();
   const [open, setOpen] = useState(false);
+  const [mounted, setMounted] = useState(false);
   const [items, setItems] = useState<NotificationData[]>([]);
   const [unread, setUnread] = useState(0);
-  const ref = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<DropdownPos>({ top: 0, left: 0, right: "auto", width: DROPDOWN_WIDTH });
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
 
   const fetchRecent = useCallback(async () => {
     try {
@@ -37,24 +65,63 @@ export default function NotificationBell() {
     }
   }, []);
 
+  const updatePosition = useCallback(() => {
+    if (!btnRef.current) return;
+    setPos(clampDropdownPosition(btnRef.current.getBoundingClientRect()));
+  }, []);
+
+  useEffect(() => setMounted(true), []);
+
   useEffect(() => {
     if (status !== "authenticated") return;
     fetchRecent();
-    const id = setInterval(fetchRecent, 15000);
+    const id = setInterval(fetchRecent, 10000);
     return () => clearInterval(id);
   }, [fetchRecent, status]);
 
-  // Close when clicking outside.
+  useEffect(() => {
+    if (!open) return;
+    updatePosition();
+    const onResize = () => updatePosition();
+    const onScroll = () => updatePosition();
+    window.addEventListener("resize", onResize);
+    window.addEventListener("scroll", onScroll, true);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      window.removeEventListener("scroll", onScroll, true);
+    };
+  }, [open, updatePosition]);
+
   useEffect(() => {
     if (!open) return;
     const onClick = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      const target = e.target as Node;
+      if (wrapRef.current?.contains(target)) return;
+      if (document.getElementById("notif-dropdown-portal")?.contains(target)) return;
+      setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
     };
     document.addEventListener("mousedown", onClick);
-    return () => document.removeEventListener("mousedown", onClick);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onClick);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open || window.innerWidth >= 1024) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
   }, [open]);
 
   const markRead = async (n: NotificationData) => {
+    if (n.isRead) return;
     try {
       await fetch(`/api/notifications/${n._id}`, {
         method: "PATCH",
@@ -78,118 +145,121 @@ export default function NotificationBell() {
     }
   };
 
+  const toggleOpen = () => {
+    setOpen((o) => {
+      const next = !o;
+      if (next) {
+        requestAnimationFrame(updatePosition);
+        fetchRecent();
+      }
+      return next;
+    });
+  };
+
+  const dropdown = open && mounted ? (
+  <>
+    <div className="notif-backdrop" onClick={() => setOpen(false)} aria-hidden />
+    <div
+      id="notif-dropdown-portal"
+      className="notif-dropdown notif-dropdown-fixed"
+      style={{
+        top: pos.top,
+        left: pos.left === "auto" ? undefined : pos.left,
+        right: pos.right === "auto" ? undefined : pos.right,
+        width: pos.width,
+      }}
+      role="dialog"
+      aria-label="Notifications"
+    >
+      <div className="notif-dropdown-head">
+        <div className="notif-dropdown-title">
+          <h3>Notifications</h3>
+          {unread > 0 && <span className="count-chip">{unread} new</span>}
+        </div>
+        <div className="notif-dropdown-tools">
+          {unread > 0 && (
+            <button type="button" onClick={markAllRead} className="notif-mark-all">
+              Mark all read
+            </button>
+          )}
+          <button type="button" onClick={() => setOpen(false)} className="icon-btn" aria-label="Close">
+            <svg width="16" height="16" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      {items.length === 0 ? (
+        <div className="notif-empty">
+          <div className="icon">
+            <svg width="22" height="22" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0" />
+            </svg>
+          </div>
+          <p>No notifications yet</p>
+        </div>
+      ) : (
+        <ul className="notif-dropdown-list">
+          {items.map((n) => (
+            <li key={n._id}>
+              <Link
+                href={n.link || "/notifications"}
+                onClick={() => { markRead(n); setOpen(false); }}
+                className={`notif-dropdown-item${!n.isRead ? " unread" : ""}`}
+              >
+                <div className={`tile tile-sm ${notificationTypeAccent(n.type)}`}>
+                  <NotificationTypeIcon type={n.type} className="w-4 h-4" />
+                </div>
+                <span className="notif-dropdown-body">
+                  <span className="notif-title">{n.title}</span>
+                  <span className="notif-msg">{n.message}</span>
+                  <span className="notif-time">{formatNotificationTime(n.createdAt)}</span>
+                </span>
+                {!n.isRead && <span className="notif-unread-dot" aria-hidden />}
+              </Link>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <Link href="/notifications" onClick={() => setOpen(false)} className="notif-dropdown-footer">
+        View all notifications
+      </Link>
+    </div>
+  </>
+  ) : null;
+
   if (status === "loading") {
     return (
-      <div className="relative flex h-9 w-9 items-center justify-center rounded-lg text-zinc-400">
-        <svg className="w-5 h-5 animate-pulse" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <button type="button" className="notif-btn" aria-label="Loading notifications" disabled>
+        <svg width="18" height="18" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" style={{ opacity: 0.5 }}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0" />
         </svg>
-      </div>
+      </button>
     );
   }
 
   return (
-    <div className="relative" ref={ref}>
+    <div className="notif-wrap" ref={wrapRef}>
       <button
-        onClick={() => { setOpen((o) => !o); if (!open) fetchRecent(); }}
-        className="relative flex h-9 w-9 items-center justify-center rounded-lg text-zinc-500 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-800 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors"
-        title="Notifications"
+        ref={btnRef}
+        type="button"
+        onClick={toggleOpen}
+        className="notif-btn"
+        aria-label="Notifications"
+        aria-expanded={open}
+        aria-haspopup="dialog"
       >
-        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+        <svg width="18" height="18" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0" />
         </svg>
         {unread > 0 && (
-          <span className="absolute -top-0.5 -right-0.5 flex h-5 min-w-[20px] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold text-white">
-            {unread > 99 ? "99+" : unread}
-          </span>
+          <span className="notif-badge">{unread > 99 ? "99+" : unread}</span>
         )}
       </button>
 
-      {open && (
-        <div className="absolute left-0 lg:left-auto lg:right-0 mt-2 w-80 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 shadow-xl overflow-hidden z-50">
-          <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-200 dark:border-zinc-800">
-            <div className="flex items-center gap-2">
-              <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
-                Notifications
-              </h3>
-              {unread > 0 && (
-                <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300">
-                  {unread} new
-                </span>
-              )}
-            </div>
-            <div className="flex items-center gap-1">
-              {unread > 0 && (
-                <button
-                  onClick={markAllRead}
-                  className="text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-300 transition"
-                >
-                  Mark all read
-                </button>
-              )}
-              <button
-                onClick={() => setOpen(false)}
-                className="rounded-lg p-1 text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition"
-              >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
-              </button>
-            </div>
-          </div>
-
-          {items.length === 0 ? (
-            <div className="px-4 py-8 text-center text-sm text-zinc-400">
-              No notifications yet
-            </div>
-          ) : (
-            <ul className="max-h-80 overflow-y-auto divide-y divide-zinc-100 dark:divide-zinc-800">
-              {items.map((n) => (
-                <li key={n._id}>
-                  <Link
-                    href={n.link || "/notifications"}
-                    onClick={() => { markRead(n); setOpen(false); }}
-                    className={`flex items-start gap-3 px-4 py-3 transition ${
-                      n.isRead ? "" : "bg-indigo-50/50 dark:bg-indigo-950/20"
-                    } hover:bg-zinc-50 dark:hover:bg-zinc-800/50`}
-                  >
-                    <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${n.isRead ? "bg-zinc-300 dark:bg-zinc-600" : "bg-indigo-600 dark:bg-indigo-400"}`} />
-                    <span className="min-w-0 flex-1">
-                      <span className="block text-sm font-medium text-zinc-900 dark:text-zinc-100 truncate">
-                        {n.title}
-                      </span>
-                      <span className="block text-xs text-zinc-500 dark:text-zinc-400 line-clamp-2">
-                        {n.message}
-                      </span>
-                      <span className="block mt-0.5 text-[11px] text-zinc-400">
-                        {timeAgo(n.createdAt)}
-                      </span>
-                    </span>
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          )}
-
-          <Link
-            href="/notifications"
-            onClick={() => setOpen(false)}
-            className="block px-4 py-2.5 text-center text-sm font-medium text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 border-t border-zinc-200 dark:border-zinc-800 transition"
-          >
-            View all notifications
-          </Link>
-        </div>
-      )}
+      {mounted && dropdown ? createPortal(dropdown, document.body) : null}
     </div>
   );
-}
-
-function timeAgo(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime();
-  const minutes = Math.floor(diff / 60000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days === 1) return "yesterday";
-  return `${days}d ago`;
 }

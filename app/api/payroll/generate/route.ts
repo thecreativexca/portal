@@ -5,6 +5,7 @@ import User from "@/models/User";
 import { requireAuth, handleApiError } from "@/lib/guards";
 import { rateLimitByUser } from "@/lib/rateLimit";
 import { logActivity } from "@/lib/logActivity";
+import { notifyUsers, notifyUser } from "@/lib/notify";
 
 function currentMonth(): string {
   const d = new Date();
@@ -61,9 +62,24 @@ export async function POST(request: NextRequest) {
       });
 
     let created = 0;
+    let inserted: { userId: { toString(): string } }[] = [];
     if (docs.length > 0) {
       const res = await Payroll.insertMany(docs);
       created = res.length;
+      inserted = res;
+    }
+
+    if (inserted.length > 0) {
+      await notifyUsers(
+        inserted.map((record) => ({
+          companyId,
+          userId: record.userId.toString(),
+          title: "Payroll generated",
+          message: `Your payroll for ${month} has been generated`,
+          type: "payroll",
+          link: "/payroll",
+        }))
+      );
     }
 
     await logActivity({

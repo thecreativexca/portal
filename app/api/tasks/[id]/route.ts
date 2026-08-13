@@ -7,6 +7,7 @@ import TimeLog from "@/models/TimeLog";
 import { requireAuth, assertPermission, handleApiError } from "@/lib/guards";
 import { rateLimitByUser } from "@/lib/rateLimit";
 import { logActivity } from "@/lib/logActivity";
+import { notifyUser } from "@/lib/notify";
 import { loggedMinutesForTask } from "@/lib/taskTime";
 import { toObjectId, toObjectIdOrNull } from "@/lib/ids";
 
@@ -191,6 +192,10 @@ async function updateTask(
       );
     }
 
+    const prevAssignedTo = task.assignedTo.toString();
+    const prevStatus = task.status;
+    const taskLink = "/tasks";
+
     await Task.findByIdAndUpdate(objectId, updateData, {
       new: true,
       runValidators: true,
@@ -203,6 +208,37 @@ async function updateTask(
       details: `Updated task "${task.title}"`,
       taskId: objectId.toString(),
     });
+
+    const actorName = user.fullName || user.name || "Someone";
+
+    if (
+      updateData.assignedTo &&
+      updateData.assignedTo !== prevAssignedTo &&
+      updateData.assignedTo !== user._id.toString()
+    ) {
+      await notifyUser({
+        companyId,
+        userId: updateData.assignedTo,
+        title: "Task reassigned to you",
+        message: `${actorName} assigned you "${task.title}"`,
+        type: "task",
+        link: taskLink,
+      });
+    }
+
+    if (updateData.status === "done" && prevStatus !== "done") {
+      const managerId = task.assignedBy?.toString();
+      if (managerId && managerId !== user._id.toString()) {
+        await notifyUser({
+          companyId,
+          userId: managerId,
+          title: "Task completed",
+          message: `"${task.title}" was marked as done by ${actorName}`,
+          type: "task",
+          link: taskLink,
+        });
+      }
+    }
 
     const populated = await loadTask(objectId, companyId);
     return NextResponse.json({ task: populated });

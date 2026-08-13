@@ -98,3 +98,10 @@ export function toastSuccess(message: string): void {
 export function toastError(message: string): void {
   toast.error(message, { duration: 4000 });
 }
+
+export function toastNotification(title: string, message?: string): void {
+  toast(message ? `${title} — ${message}` : title, {
+    duration: 5000,
+    icon: "🔔",
+  });
+}

@@ -130,7 +130,7 @@ export async function POST(request: NextRequest) {
       userId: userId.toString(),
       companyId,
       action: "APPLY_LEAVE",
-      details: `Applied leave from ${startDate} to ${endDate}`,
+      details: `${user.fullName || user.name || "An employee"} requested leave (${start.toLocaleDateString()} - ${end.toLocaleDateString()})`,
     });
 
     return NextResponse.json({ leave }, { status: 201 });

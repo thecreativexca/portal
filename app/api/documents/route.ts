@@ -118,7 +118,7 @@ export async function POST(request: NextRequest) {
       userId: user._id.toString(),
       companyId,
       action: "UPLOAD_DOCUMENT",
-      details: `Uploaded "${document.name}" to ${docFolder}`,
+      details: `${user.fullName || user.name || "Someone"} uploaded "${document.name}" to ${docFolder}`,
     });
 
     const populated = await Document.findById(document._id)

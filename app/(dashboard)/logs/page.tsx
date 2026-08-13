@@ -137,7 +137,7 @@ export default function LogsPage() {
             </svg>
           </div>
           <div>
-            <div className="summary-num">{stats?.total ?? "â€”"}</div>
+            <div className="summary-num">{stats?.total ?? "\u2014"}</div>
             <div className="summary-label">Total Actions</div>
           </div>
         </div>
@@ -148,7 +148,7 @@ export default function LogsPage() {
             </svg>
           </div>
           <div>
-            <div className="summary-num">{stats?.today ?? "â€”"}</div>
+            <div className="summary-num">{stats?.today ?? "\u2014"}</div>
             <div className="summary-label">Today</div>
           </div>
         </div>
@@ -159,7 +159,7 @@ export default function LogsPage() {
             </svg>
           </div>
           <div>
-            <div className="summary-num">{stats?.byAction?.length ?? "â€”"}</div>
+            <div className="summary-num">{stats?.byAction?.length ?? "\u2014"}</div>
             <div className="summary-label">Action Types</div>
           </div>
         </div>
@@ -182,7 +182,7 @@ export default function LogsPage() {
       <div className="card">
         <div className="card-header">
           <h2>Timeline</h2>
-          <span className="count-chip">{loading ? "â€”" : logs.length} events</span>
+          <span className="count-chip">{loading ? "\u2014" : logs.length} events</span>
         </div>
         <div className="card-body">
           {loading ? (
