@@ -95,7 +95,7 @@ function isResendSandboxError(error: unknown): boolean {
     err?.statusCode === 403 &&
     (err?.message?.includes("testing emails") ||
       err?.message?.includes("not verified"))
-  );
+  ) ?? false;
 }
 
 async function sendViaResend(
