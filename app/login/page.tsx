@@ -253,6 +253,23 @@ export default function LoginPage() {
               "Sign In"
             )}
           </button>
+
+          <div style={{ textAlign: "center", marginTop: "20px" }}>
+            <button
+              type="button"
+              onClick={() => router.push("/forgot-password")}
+              style={{
+                background: "none",
+                border: "none",
+                color: "rgba(255, 255, 255, 0.6)",
+                cursor: "pointer",
+                fontSize: "14px",
+                textDecoration: "underline",
+              }}
+            >
+              Forgot Password?
+            </button>
+          </div>
         </form>
       </div>
     </div>

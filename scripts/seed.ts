@@ -38,7 +38,7 @@ async function seed() {
 
     const ceo = await User.create({
       name: "CEO",
-      email: "ceo@company.com",
+      email: "thecreativex.ca@gmail.com",
       password: "password123",
       role: "ceo",
     });
@@ -48,7 +48,7 @@ async function seed() {
     console.log(`  Email: ${ceo.email}`);
     console.log(`  Role: ${ceo.role}`);
     console.log("\nLogin credentials:");
-    console.log("  Email: ceo@company.com");
+    console.log("  Email: thecreativex.ca@gmail.com");
     console.log("  Password: password123");
 
     await mongoose.disconnect();

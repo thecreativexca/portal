@@ -64,6 +64,12 @@ export const RATE_LIMIT_TIERS = {
   ceoAggregates: { limit: 30, windowMs: 60_000 },
   /** Generic list endpoints. */
   reads: { limit: 300, windowMs: 60_000 },
+  /** Password reset OTP request — keyed by IP. */
+  passwordReset: { limit: 5, windowMs: 15 * 60 * 1000 },
+  /** Password reset OTP resend — keyed by email. */
+  passwordResetResend: { limit: 3, windowMs: 15 * 60 * 1000 },
+  /** Password reset OTP verify attempts — keyed by email. */
+  passwordResetVerify: { limit: 5, windowMs: 15 * 60 * 1000 },
 } as const;
 
 /** Get the requestor key for a route: authenticated userId or the IP. */

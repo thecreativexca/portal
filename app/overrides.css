@@ -354,6 +354,29 @@
   opacity: 0.65;
   cursor: not-allowed;
 }
+.login-submit-secondary {
+  margin-top: 12px;
+  background: transparent !important;
+  border: 1px solid rgba(56, 189, 248, 0.35) !important;
+  box-shadow: none !important;
+}
+.login-submit-secondary:hover:not(:disabled) {
+  background: rgba(56, 189, 248, 0.08) !important;
+  transform: none;
+}
+.login-success {
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(45, 212, 191, 0.12);
+  border: 1px solid rgba(45, 212, 191, 0.3);
+  color: #5eead4;
+  font-size: 13px;
+  line-height: 1.4;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
 .login-spinner {
   width: 16px;
   height: 16px;

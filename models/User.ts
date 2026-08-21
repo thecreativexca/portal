@@ -1,6 +1,16 @@
 import mongoose, { Schema, Document, Model } from "mongoose";
 import bcrypt from "bcryptjs";
 import { ROLE_KEYS, RoleKey } from "./Role";
+import {
+  OTP_EXPIRY_MS,
+  RESET_TOKEN_EXPIRY_MS,
+  generateOtp,
+  generateResetToken,
+  hashOtp,
+  hashResetToken,
+  verifyOtpHash,
+  verifyResetToken,
+} from "@/lib/passwordReset";
 
 export interface IUser extends Document {
   companyId: mongoose.Types.ObjectId;
@@ -18,9 +28,17 @@ export interface IUser extends Document {
   status: "active" | "inactive";
   profileImage?: string;
   password: string;
+  otpHash?: string;
+  otpExpires?: Date;
+  resetTokenHash?: string;
+  resetTokenExpires?: Date;
   createdAt: Date;
   updatedAt: Date;
   comparePassword(candidatePassword: string): Promise<boolean>;
+  issuePasswordResetOtp(): string;
+  verifyPasswordResetOtp(candidateOtp: string): string | null;
+  verifyPasswordResetToken(candidateToken: string): boolean;
+  clearPasswordResetFields(): void;
 }
 
 const UserSchema = new Schema<IUser>(
@@ -94,6 +112,22 @@ const UserSchema = new Schema<IUser>(
       minlength: [6, "Password must be at least 6 characters"],
       select: false,
     },
+    otpHash: {
+      type: String,
+      select: false,
+    },
+    otpExpires: {
+      type: Date,
+      select: false,
+    },
+    resetTokenHash: {
+      type: String,
+      select: false,
+    },
+    resetTokenExpires: {
+      type: Date,
+      select: false,
+    },
   },
   {
     timestamps: true,
@@ -120,6 +154,52 @@ UserSchema.pre<IUser>("save", async function () {
   const salt = await bcrypt.genSalt(12);
   this.password = await bcrypt.hash(this.password, salt);
 });
+
+// Issue a password-reset OTP (stored hashed; plain OTP returned only for email delivery).
+UserSchema.methods.issuePasswordResetOtp = function (): string {
+  const otp = generateOtp();
+  this.otpHash = hashOtp(otp);
+  this.otpExpires = new Date(Date.now() + OTP_EXPIRY_MS);
+  this.resetTokenHash = undefined;
+  this.resetTokenExpires = undefined;
+  return otp;
+};
+
+UserSchema.methods.verifyPasswordResetOtp = function (
+  candidateOtp: string
+): string | null {
+  if (!this.otpHash || !this.otpExpires) return null;
+  if (this.otpExpires < new Date()) {
+    this.clearPasswordResetFields();
+    return null;
+  }
+  if (!verifyOtpHash(candidateOtp, this.otpHash)) return null;
+
+  const resetToken = generateResetToken();
+  this.resetTokenHash = hashResetToken(resetToken);
+  this.resetTokenExpires = new Date(Date.now() + RESET_TOKEN_EXPIRY_MS);
+  this.otpHash = undefined;
+  this.otpExpires = undefined;
+  return resetToken;
+};
+
+UserSchema.methods.verifyPasswordResetToken = function (
+  candidateToken: string
+): boolean {
+  if (!this.resetTokenHash || !this.resetTokenExpires) return false;
+  if (this.resetTokenExpires < new Date()) {
+    this.clearPasswordResetFields();
+    return false;
+  }
+  return verifyResetToken(candidateToken, this.resetTokenHash);
+};
+
+UserSchema.methods.clearPasswordResetFields = function (): void {
+  this.otpHash = undefined;
+  this.otpExpires = undefined;
+  this.resetTokenHash = undefined;
+  this.resetTokenExpires = undefined;
+};
 
 // Compare password method
 UserSchema.methods.comparePassword = async function (
